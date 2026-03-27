@@ -2,7 +2,7 @@ Usage: /update-docs-and-commit [optional commit message or description]
 
 What it does:
 1. Analyzes git changes (status + diff)
-2. Updates docs/CHANGELOG.md — adds entries for new features/fixes
+2. Updates docs/changelog.md — adds entries for new features/fixes
 3. Updates docs/architecture.md — only if structural changes occurred (schema, data flow, rendering strategy, stack)
 4. Updates docs/project_status.md — moves completed items, updates what's next, notes any blockers
 5. Stages and commits all changes
@@ -11,7 +11,7 @@ What it does:
 
 1. Run `git diff` and `git status` to understand the full scope of changes
 
-2. Update `docs/CHANGELOG.md` — add an entry under `[Unreleased]` with the appropriate category:
+2. Update `docs/changelog.md` — add an entry under `[Unreleased]` with the appropriate category:
    - `### Added` — new features or files
    - `### Changed` — changes to existing functionality
    - `### Fixed` — bug fixes

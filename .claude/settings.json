@@ -5,5 +5,19 @@
       "Bash(npx *)",
       "Bash(git *)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE '^git commit' && ! echo \"$cmd\" | grep -qi 'changelog'; then jq -n '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Commit complete. Update docs/changelog.md with an entry for this commit. Use git log -1 to get the message. Do not commit changelog.md — it will be included in the next commit.\"}}'; fi",
+            "statusMessage": "Checking changelog..."
+          }
+        ]
+      }
+    ]
   }
 }

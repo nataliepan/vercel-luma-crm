@@ -231,9 +231,9 @@ export async function POST(req: Request) {
         updated_at   = now()
       RETURNING id,
         (xmax = 0) AS is_insert,
-        (name IS DISTINCT FROM EXCLUDED.name
-          OR company IS DISTINCT FROM EXCLUDED.company
-          OR role IS DISTINCT FROM EXCLUDED.role) AS fields_changed
+        -- Why xmax = 0: standard Postgres trick — xmax is 0 on fresh inserts, non-zero on updates.
+        -- We can't reference EXCLUDED in RETURNING, so fields_changed is detected via xmax only.
+        (xmax != 0) AS fields_changed
     `, [userId, email, fields.name, fields.company, fields.role, fields.linkedinUrl, fields.givenEmail, fields.notes, JSON.stringify(row)])
 
     const { id: contactId, is_insert, fields_changed } = upsertResult.rows[0]

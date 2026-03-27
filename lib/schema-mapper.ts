@@ -33,7 +33,9 @@ export async function mapSchema(headers: string[]): Promise<Record<string, strin
       maxOutputTokens: 500,
     })
 
-    const json = JSON.parse(result.text.trim())
+    // Strip markdown code fences if the model wraps the response in ```json ... ```
+    const cleaned = result.text.trim().replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+    const json = JSON.parse(cleaned)
 
     // Validate: only allow known canonical field values
     const validated: Record<string, string> = {}

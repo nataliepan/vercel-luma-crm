@@ -34,3 +34,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Claude Code worktrees and memory
+.claude/
+
+# local interview prep — contains personal emails and prep notes
+docs/INTERVIEW.md

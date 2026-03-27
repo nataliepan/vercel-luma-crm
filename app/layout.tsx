@@ -1,16 +1,19 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
+import { Sidebar } from "@/components/sidebar";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+// Why Inter: matches the reference design's clean, modern SaaS aesthetic.
+// Inter is purpose-built for screen UIs — optimized for readability at small sizes,
+// which matters for dense contact tables.
+// Why --font-inter not --font-sans: globals.css has @theme inline { --font-sans: var(--font-sans) }
+// which is circular. Using --font-inter as the Next.js variable breaks the cycle —
+// globals.css then maps --font-sans → var(--font-inter) safely.
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -27,15 +30,15 @@ export default function RootLayout({
     <ClerkProvider>
       <html
         lang="en"
-        className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+        className={`${inter.variable} h-full antialiased`}
+        // inter.variable injects --font-inter onto the html element
       >
-        <body className="min-h-full flex flex-col">
-          <nav className="border-b px-6 py-3 flex items-center gap-6 text-sm">
-            <span className="font-semibold">Luma CRM</span>
-            <a href="/contacts" className="text-gray-600 hover:text-black">Contacts</a>
-            <a href="/import" className="text-gray-600 hover:text-black">Import</a>
-          </nav>
-          {children}
+        {/* Why flex h-full: sidebar stays fixed height while main content scrolls independently */}
+        <body className="flex h-full overflow-hidden bg-white">
+          <Sidebar />
+          <main className="flex-1 overflow-y-auto">
+            {children}
+          </main>
         </body>
       </html>
     </ClerkProvider>

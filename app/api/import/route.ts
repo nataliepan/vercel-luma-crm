@@ -81,6 +81,7 @@ function extractFields(row: Record<string, string>, columnMap: Record<string, st
 }
 
 export async function POST(req: Request) {
+  try {
   // Step 0: Auth — every query filters by userId for row-level isolation
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -346,4 +347,16 @@ export async function POST(req: Request) {
       totalRows: parsed.data.length,
     },
   })
+
+  } catch (err) {
+    // Why top-level catch: any unhandled throw (DB down, AI timeout, etc.) would
+    // cause Next.js to return an HTML 500 page. The client calls res.json() which
+    // then throws a SyntaxError caught as a misleading "Network error".
+    // Returning JSON here gives the client a real error message to display.
+    console.error('Import failed:', err)
+    return NextResponse.json(
+      { error: (err as Error).message ?? 'Import failed' },
+      { status: 500 }
+    )
+  }
 }

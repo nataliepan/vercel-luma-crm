@@ -40,7 +40,15 @@ export default function ImportPage() {
 
     try {
       const res = await fetch('/api/import', { method: 'POST', body: formData })
-      const data = await res.json()
+
+      // Safely parse — a DB or AI crash returns HTML 500, not JSON.
+      // Parsing HTML as JSON throws a SyntaxError which would show as "Network error".
+      const text = await res.text()
+      let data: Record<string, unknown> = {}
+      try { data = JSON.parse(text) } catch {
+        setState({ status: 'error', message: `Server error (${res.status}) — check server logs.` })
+        return
+      }
 
       if (res.status === 409) {
         setState({ status: 'error', message: data.message ?? 'Duplicate file.' })

@@ -25,7 +25,10 @@ CREATE TABLE contacts (
   merged_into_id        UUID REFERENCES contacts(id),
   last_dedup_checked_at TIMESTAMPTZ,
   created_at            TIMESTAMPTZ DEFAULT now(),
-  updated_at            TIMESTAMPTZ DEFAULT now()
+  updated_at            TIMESTAMPTZ DEFAULT now(),
+  -- Why unique constraint not just index: ON CONFLICT (user_id, email) in the
+  -- contact upsert requires a unique constraint, not just a unique index.
+  CONSTRAINT uq_contacts_user_email UNIQUE (user_id, email)
 );
 
 -- Events table

@@ -15,8 +15,7 @@ type ImportSummary = {
 type ImportState =
   | { status: 'idle' }
   | { status: 'importing' }
-  | { status: 'series_conflict'; seriesName: string; lastImportedAt: string; existingEventId: string }
-  | { status: 'overlap_conflict'; overlapPct: number; newRows: number }
+  | { status: 'same_event'; eventName: string; existingExportedAt: string; newExportedAt: string | null; existingEventId: string }
   | { status: 'done'; summary: ImportSummary; eventName: string }
   | { status: 'error'; message: string }
 
@@ -28,15 +27,15 @@ export default function ImportPage() {
 
   const submit = useCallback(async (
     file: File,
-    intent?: 'new_session' | 'reexport',
-    forceOverlap?: boolean
+    mergeStrategy?: 'use_new' | 'keep_existing',
+    existingEventId?: string
   ) => {
     setState({ status: 'importing' })
 
     const formData = new FormData()
     formData.append('file', file)
-    if (intent) formData.append('intent', intent)
-    if (forceOverlap) formData.append('force_overlap', 'true')
+    if (mergeStrategy) formData.append('merge_strategy', mergeStrategy)
+    if (existingEventId) formData.append('existing_event_id', existingEventId)
 
     try {
       const res = await fetch('/api/import', { method: 'POST', body: formData })
@@ -50,23 +49,27 @@ export default function ImportPage() {
         return
       }
 
+      const str = (v: unknown, fallback: string) => (typeof v === 'string' ? v : fallback)
+
       if (res.status === 409) {
-        setState({ status: 'error', message: data.message ?? 'Duplicate file.' })
+        setState({ status: 'error', message: str(data.message, 'Duplicate file.') })
         return
       }
-      if (data.conflict === 'series_exists') {
-        setState({ status: 'series_conflict', ...data })
-        return
-      }
-      if (data.conflict === 'high_overlap') {
-        setState({ status: 'overlap_conflict', ...data })
+      if (data.conflict === 'same_event') {
+        setState({
+          status: 'same_event',
+          eventName: str(data.eventName, ''),
+          existingExportedAt: str(data.existingExportedAt, ''),
+          newExportedAt: typeof data.newExportedAt === 'string' ? data.newExportedAt : null,
+          existingEventId: str(data.existingEventId, ''),
+        })
         return
       }
       if (!res.ok || data.error) {
-        setState({ status: 'error', message: data.message ?? data.error ?? 'Import failed.' })
+        setState({ status: 'error', message: str(data.message ?? data.error, 'Import failed.') })
         return
       }
-      setState({ status: 'done', summary: data.summary, eventName: data.eventName })
+      setState({ status: 'done', summary: data.summary as ImportSummary, eventName: str(data.eventName, '') })
     } catch {
       setState({ status: 'error', message: 'Network error — please try again.' })
     }
@@ -118,33 +121,39 @@ export default function ImportPage() {
         </div>
       )}
 
-      {state.status === 'series_conflict' && (
-        <div className="border rounded-lg p-6 space-y-4">
-          <p className="font-medium">"{state.seriesName}" already exists</p>
-          <p className="text-sm text-gray-500">
-            Last imported: {new Date(state.lastImportedAt).toLocaleDateString()}
-          </p>
-          <p className="text-sm">Is this a new session or an updated export of the same event?</p>
-          <div className="flex gap-3">
-            <Button onClick={() => submit(pendingFile!, 'new_session')}>New session</Button>
-            <Button variant="outline" onClick={() => submit(pendingFile!, 'reexport')}>Re-export / update</Button>
+      {state.status === 'same_event' && (() => {
+        const existingDate = new Date(state.existingExportedAt)
+        const newDate = state.newExportedAt ? new Date(state.newExportedAt) : null
+        // Determine which export is newer so we can label the options clearly.
+        const uploadIsNewer = newDate ? newDate > existingDate : false
+        return (
+          <div className="border rounded-lg p-6 space-y-4">
+            <p className="font-medium">This looks like the same event</p>
+            <p className="text-sm text-gray-500">
+              "{state.eventName}" was already imported. New contacts will be added either way — choose how to handle contacts that already exist.
+            </p>
+            <div className="flex flex-col gap-2 text-sm text-gray-500">
+              <div className="flex justify-between">
+                <span>Existing export</span>
+                <span>{existingDate.toLocaleString()}{!uploadIsNewer && <span className="ml-2 text-xs font-medium text-black">← newer</span>}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>This file</span>
+                <span>{newDate ? newDate.toLocaleString() : 'no date'}{uploadIsNewer && <span className="ml-2 text-xs font-medium text-black">← newer</span>}</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Button onClick={() => submit(pendingFile!, uploadIsNewer ? 'use_new' : 'keep_existing', state.existingEventId)}>
+                Use newest info{uploadIsNewer ? ' (this file)' : ' (keep existing)'}
+              </Button>
+              <Button variant="outline" onClick={() => submit(pendingFile!, uploadIsNewer ? 'keep_existing' : 'use_new', state.existingEventId)}>
+                Use oldest info{uploadIsNewer ? ' (keep existing)' : ' (this file)'}
+              </Button>
+              <button className="text-xs text-gray-400 underline text-left" onClick={() => setState({ status: 'idle' })}>Cancel</button>
+            </div>
           </div>
-          <button className="text-xs text-gray-400 underline" onClick={() => setState({ status: 'idle' })}>Cancel</button>
-        </div>
-      )}
-
-      {state.status === 'overlap_conflict' && (
-        <div className="border rounded-lg p-6 space-y-4">
-          <p className="font-medium text-amber-600">Possible duplicate upload</p>
-          <p className="text-sm text-gray-600">
-            {state.overlapPct}% of contacts already exist. Only {state.newRows} new rows detected.
-          </p>
-          <div className="flex gap-3">
-            <Button onClick={() => submit(pendingFile!, undefined, true)}>Proceed anyway</Button>
-            <Button variant="outline" onClick={() => setState({ status: 'idle' })}>Cancel</Button>
-          </div>
-        </div>
-      )}
+        )
+      })()}
 
       {state.status === 'done' && (
         <div className="border rounded-lg p-6 space-y-4">

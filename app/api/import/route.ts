@@ -13,6 +13,22 @@ export const maxDuration = 120
 const CONTACT_CANONICAL_FIELDS = new Set(['email', 'name', 'company', 'role', 'linkedin_url', 'given_email', 'notes'])
 const EVENT_CANONICAL_FIELDS = new Set(['approval_status', 'has_joined_event', 'registered_at'])
 
+// Extract Luma's own event ID from any qr_code_url in the CSV rows.
+// Why: Luma encodes a stable evt-XXXX identifier in every check-in URL.
+// Two exports of the same event always share the same evt-XXXX.
+// Two different events always have different evt-XXXX, even if the title is identical.
+// This makes it the only reliable key for "same event vs different event" —
+// series_name (from filename) cannot distinguish same-title recurring sessions.
+function extractLumaEventId(rows: Record<string, string>[]): string | null {
+  for (const row of rows.slice(0, 20)) {
+    for (const val of Object.values(row)) {
+      const match = val?.match(/\/(evt-[A-Za-z0-9]+)/)
+      if (match) return match[1]
+    }
+  }
+  return null
+}
+
 function parseFilename(filename: string): {
   eventName: string
   seriesName: string
@@ -88,8 +104,13 @@ export async function POST(req: Request) {
 
   const formData = await req.formData()
   const file = formData.get('file') as File | null
-  const intent = formData.get('intent') as 'new_session' | 'reexport' | null
-  const forceOverlap = formData.get('force_overlap') === 'true'
+  // merge_strategy: how to handle contacts when re-importing the same event.
+  // 'use_new'       = uploaded file's data overwrites existing contact fields + adds new contacts
+  // 'keep_existing' = existing contact fields preserved, only new contacts inserted
+  const mergeStrategy = formData.get('merge_strategy') as 'use_new' | 'keep_existing' | null
+  // existing_event_id: passed back by the UI after the user resolves a same_event conflict,
+  // so we skip conflict detection on the second request and know which event row to update.
+  const existingEventIdFromForm = formData.get('existing_event_id') as string | null
 
   // Step 1: Validate file
   if (!file || file.size === 0) {
@@ -133,64 +154,119 @@ export async function POST(req: Request) {
   // Step 3: Parse filename
   const { eventName, seriesName, lastExportedAt } = parseFilename(file.name)
 
-  // Step 4: Gate 1 — series conflict check
-  const seriesCheck = await db.query(
-    `SELECT id, name, last_exported_at FROM events
-     WHERE user_id = $1 AND series_name = $2
-     ORDER BY created_at DESC LIMIT 1`,
-    [userId, seriesName]
-  )
-  if (seriesCheck.rows.length > 0 && !intent) {
-    return NextResponse.json({
-      conflict: 'series_exists',
-      seriesName,
-      lastImportedAt: seriesCheck.rows[0].last_exported_at,
-      existingEventId: seriesCheck.rows[0].id,
-    })
-  }
+  // Step 4: Extract Luma event ID — primary key for "same event vs new event"
+  // Why before schema mapping: we scan raw cell values for the evt- pattern,
+  // no need to wait for AI to identify the qr_code_url column.
+  const lumaEventId = extractLumaEventId(parsed.data)
 
   // Step 5: AI schema mapping — O(1) AI calls regardless of row count
   const headers = Object.keys(parsed.data[0] ?? {})
   const columnMap = await mapSchema(headers)
   const reverseMap = buildReverseMap(columnMap)
-
-  // Step 6: Gate 2 — high overlap check (only on reexport)
+  // Why hoist emailHeader here: used both in the overlap check (Case C fallback)
+  // and in the bulk upsert loop (Step 8) outside the event resolution block.
   const emailHeader = reverseMap['email']
-  const incomingEmails = emailHeader
-    ? parsed.data.map(row => row[emailHeader]?.toLowerCase()?.trim()).filter(Boolean) as string[]
-    : []
 
-  if (intent === 'reexport' && incomingEmails.length > 0 && !forceOverlap) {
-    const existingEventId = seriesCheck.rows[0]?.id
-    if (existingEventId) {
-      const overlapCheck = await db.query(
-        `SELECT COUNT(*) FROM contact_events ce
-         JOIN contacts c ON ce.contact_id = c.id
-         WHERE ce.event_id = $1 AND lower(c.email) = ANY($2::text[])`,
-        [existingEventId, incomingEmails]
+  // Step 6: Resolve event record
+  //
+  // Decision tree:
+  //   If user already resolved a conflict (merge_strategy + existing_event_id provided):
+  //     → skip all detection, use the event ID the UI passed back
+  //   A) luma_event_id found + matches existing event → definitive re-export, return conflict
+  //   B) luma_event_id found + no match → definitively a different event, auto-create
+  //   C) no luma_event_id → auto email-overlap check:
+  //        >60% overlap with a same-name event → return conflict (likely same event)
+  //        ≤60% overlap → different session with same name, auto-create without prompting
+  //
+  // Why luma_event_id takes precedence: it is Luma's own stable identifier per session.
+  // series_name (derived from the filename title) cannot distinguish two sessions that
+  // share a name — e.g. "ClassX Live Q&A" run on two different dates.
+  //
+  // Why auto-overlap in Case C instead of prompting: two events with the same name but
+  // different attendee sets are different events. We detect this automatically so the
+  // user never sees a "new session or re-export?" question for what is clearly a new event.
+  let eventId: string
+
+  if (mergeStrategy && existingEventIdFromForm) {
+    // User already saw the conflict UI and chose a strategy.
+    // use_new: update event metadata to reflect the new file.
+    // keep_existing: leave event metadata as-is, just add new contacts.
+    eventId = existingEventIdFromForm
+    if (mergeStrategy === 'use_new') {
+      await db.query(
+        `UPDATE events SET last_exported_at = $1, source_filename = $2 WHERE id = $3`,
+        [lastExportedAt, file.name, eventId]
       )
-      const matched = parseInt(overlapCheck.rows[0].count)
-      const overlapPct = matched / incomingEmails.length
-      const newRows = incomingEmails.length - matched
-      if (overlapPct > 0.7 && newRows < incomingEmails.length * 0.05) {
-        return NextResponse.json({
-          conflict: 'high_overlap',
-          overlapPct: Math.round(overlapPct * 100),
-          newRows,
-        })
+    }
+  } else if (lumaEventId) {
+    const exactMatch = await db.query(
+      `SELECT id, last_exported_at FROM events WHERE user_id = $1 AND luma_event_id = $2`,
+      [userId, lumaEventId]
+    )
+    if (exactMatch.rows.length > 0) {
+      // Case A: same luma_event_id = definitively the same Luma session.
+      // Return conflict so the user can choose which export's data to keep.
+      return NextResponse.json({
+        conflict: 'same_event',
+        eventName,
+        existingExportedAt: exactMatch.rows[0].last_exported_at,
+        newExportedAt: lastExportedAt,
+        existingEventId: exactMatch.rows[0].id,
+      })
+    } else {
+      // Case B: different luma_event_id = definitively a different event, even if the
+      // series_name is identical (e.g. recurring weekly session with the same title).
+      // Auto-import with no prompt.
+      const eventResult = await db.query(
+        `INSERT INTO events (user_id, name, series_name, luma_event_id, last_exported_at, source_filename)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        [userId, eventName, seriesName, lumaEventId, lastExportedAt, file.name]
+      )
+      eventId = eventResult.rows[0].id
+    }
+  } else {
+    // Case C: CSV has no qr_code_url — fall back to series_name + email overlap heuristic.
+    const seriesCheck = await db.query(
+      `SELECT id, name, last_exported_at FROM events
+       WHERE user_id = $1 AND series_name = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, seriesName]
+    )
+
+    if (seriesCheck.rows.length > 0 && emailHeader) {
+      // Compute what fraction of this file's contacts already belong to the existing event.
+      // Why 0.6 threshold: if more than 60% of attendees overlap it's almost certainly
+      // a re-export of the same session, not a new session with the same name.
+      // At <60% overlap we treat it as a new event and auto-import silently.
+      const incomingEmails = parsed.data
+        .map(row => row[emailHeader]?.toLowerCase()?.trim())
+        .filter(Boolean) as string[]
+
+      if (incomingEmails.length > 0) {
+        const overlapCheck = await db.query(
+          `SELECT COUNT(*) FROM contact_events ce
+           JOIN contacts c ON ce.contact_id = c.id
+           WHERE ce.event_id = $1 AND lower(c.email) = ANY($2::text[])`,
+          [seriesCheck.rows[0].id, incomingEmails]
+        )
+        const matched = parseInt(overlapCheck.rows[0].count)
+        const overlapPct = matched / incomingEmails.length
+
+        if (overlapPct > 0.6) {
+          // High overlap = likely the same event exported again. Ask the user.
+          return NextResponse.json({
+            conflict: 'same_event',
+            eventName,
+            existingExportedAt: seriesCheck.rows[0].last_exported_at,
+            newExportedAt: lastExportedAt,
+            existingEventId: seriesCheck.rows[0].id,
+          })
+        }
+        // Low overlap = different session with the same name. Fall through to create new event.
       }
     }
-  }
 
-  // Step 7: Upsert event record
-  let eventId: string
-  if (intent === 'reexport' && seriesCheck.rows.length > 0) {
-    eventId = seriesCheck.rows[0].id
-    await db.query(
-      `UPDATE events SET last_exported_at = $1, source_filename = $2 WHERE id = $3`,
-      [lastExportedAt, file.name, eventId]
-    )
-  } else {
+    // No same-name event exists, or overlap was low enough to be a different session.
     const eventResult = await db.query(
       `INSERT INTO events (user_id, name, series_name, last_exported_at, source_filename)
        VALUES ($1, $2, $3, $4, $5) RETURNING id`,
@@ -233,37 +309,71 @@ export async function POST(req: Request) {
 
   if (upsertEmails.length > 0) {
     // Bulk contact upsert — one round-trip for all rows.
-    // Why COALESCE: never overwrite an existing value with null — only update when
-    // the incoming row has a value.
     // Why xmax = 0: Postgres sets xmax=0 on fresh inserts, non-zero on updates —
     // the only way to distinguish INSERT vs UPDATE in a RETURNING clause.
-    const contactResult = await db.query(`
-      INSERT INTO contacts
-        (user_id, email, name, company, role, linkedin_url, given_email, notes, raw_fields, embedding_status)
-      SELECT $1, d.email, d.name, d.company, d.role, d.linkedin_url, d.given_email, d.notes, d.raw_fields::jsonb, 'pending'
-      FROM unnest(
-        $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
-      ) AS d(email, name, company, role, linkedin_url, given_email, notes, raw_fields)
-      ON CONFLICT ON CONSTRAINT uq_contacts_user_email DO UPDATE SET
-        name             = COALESCE(EXCLUDED.name, contacts.name),
-        company          = COALESCE(EXCLUDED.company, contacts.company),
-        role             = COALESCE(EXCLUDED.role, contacts.role),
-        linkedin_url     = COALESCE(EXCLUDED.linkedin_url, contacts.linkedin_url),
-        given_email      = COALESCE(EXCLUDED.given_email, contacts.given_email),
-        notes            = COALESCE(EXCLUDED.notes, contacts.notes),
-        raw_fields       = EXCLUDED.raw_fields,
-        embedding_status = 'pending',
-        updated_at       = now()
-      RETURNING id, email, (xmax = 0) AS is_insert, (xmax != 0) AS fields_changed
-    `, [userId, upsertEmails, upsertNames, upsertCompanies, upsertRoles, upsertLinkedinUrls, upsertGivenEmails, upsertNotes, upsertRawFields])
-
-    // Build email → contactId lookup and tally counts
+    //
+    // merge_strategy = 'keep_existing': user wants existing contact data preserved.
+    //   → INSERT ... ON CONFLICT DO NOTHING for the contacts table.
+    //   → We still need IDs for existing contacts to link them to the event, so we
+    //     run a second SELECT after to pick up any rows that were skipped.
+    //
+    // merge_strategy = 'use_new' (or first import, no strategy):
+    //   → Standard upsert with COALESCE — new file's value wins when non-null,
+    //     existing value is kept only when the incoming field is blank.
+    //   → Why COALESCE not bare EXCLUDED: we never null-out a field just because
+    //     the new export has an empty column. Empty != deleted.
     const emailToContactId = new Map<string, string>()
-    for (const row of contactResult.rows) {
-      emailToContactId.set(row.email, row.id)
-      if (row.is_insert) counts.newContacts++
-      else if (row.fields_changed) counts.updatedContacts++
-      else counts.existedContacts++
+
+    if (mergeStrategy === 'keep_existing') {
+      // Insert only contacts that don't exist yet; leave existing ones untouched.
+      const insertResult = await db.query(`
+        INSERT INTO contacts
+          (user_id, email, name, company, role, linkedin_url, given_email, notes, raw_fields, embedding_status)
+        SELECT $1, d.email, d.name, d.company, d.role, d.linkedin_url, d.given_email, d.notes, d.raw_fields::jsonb, 'pending'
+        FROM unnest(
+          $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
+        ) AS d(email, name, company, role, linkedin_url, given_email, notes, raw_fields)
+        ON CONFLICT ON CONSTRAINT uq_contacts_user_email DO NOTHING
+        RETURNING id, email
+      `, [userId, upsertEmails, upsertNames, upsertCompanies, upsertRoles, upsertLinkedinUrls, upsertGivenEmails, upsertNotes, upsertRawFields])
+
+      counts.newContacts = insertResult.rows.length
+
+      // Fetch IDs for all emails (new + existing) so we can link them all to contact_events.
+      const allContacts = await db.query(
+        `SELECT id, email FROM contacts WHERE user_id = $1 AND email = ANY($2::text[]) AND merged_into_id IS NULL`,
+        [userId, upsertEmails]
+      )
+      for (const row of allContacts.rows) emailToContactId.set(row.email, row.id)
+      counts.existedContacts = allContacts.rows.length - counts.newContacts
+    } else {
+      // use_new or first import: update existing contacts with the new file's data.
+      const contactResult = await db.query(`
+        INSERT INTO contacts
+          (user_id, email, name, company, role, linkedin_url, given_email, notes, raw_fields, embedding_status)
+        SELECT $1, d.email, d.name, d.company, d.role, d.linkedin_url, d.given_email, d.notes, d.raw_fields::jsonb, 'pending'
+        FROM unnest(
+          $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
+        ) AS d(email, name, company, role, linkedin_url, given_email, notes, raw_fields)
+        ON CONFLICT ON CONSTRAINT uq_contacts_user_email DO UPDATE SET
+          name             = COALESCE(EXCLUDED.name, contacts.name),
+          company          = COALESCE(EXCLUDED.company, contacts.company),
+          role             = COALESCE(EXCLUDED.role, contacts.role),
+          linkedin_url     = COALESCE(EXCLUDED.linkedin_url, contacts.linkedin_url),
+          given_email      = COALESCE(EXCLUDED.given_email, contacts.given_email),
+          notes            = COALESCE(EXCLUDED.notes, contacts.notes),
+          raw_fields       = EXCLUDED.raw_fields,
+          embedding_status = 'pending',
+          updated_at       = now()
+        RETURNING id, email, (xmax = 0) AS is_insert, (xmax != 0) AS fields_changed
+      `, [userId, upsertEmails, upsertNames, upsertCompanies, upsertRoles, upsertLinkedinUrls, upsertGivenEmails, upsertNotes, upsertRawFields])
+
+      for (const row of contactResult.rows) {
+        emailToContactId.set(row.email, row.id)
+        if (row.is_insert) counts.newContacts++
+        else if (row.fields_changed) counts.updatedContacts++
+        else counts.existedContacts++
+      }
     }
 
     // Build parallel arrays for contact_events bulk upsert

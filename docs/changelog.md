@@ -6,6 +6,14 @@ All notable changes to the Luma CRM project are documented here.
 
 ## [Unreleased]
 
+### Chore
+- Added post-commit hook to auto-update changelog after every commit
+- Fixed changelog filename case in `/update-docs-and-commit` command
+- Added `.claude/settings.json` with shared permissions and hooks
+- Added `docs/.env.example` with required environment variables
+- Ignored `.windsurf/`, `.cursor/`, `.agents/` in `.gitignore`
+- Cleaned up duplicate `skills/` and `.windsurf/` directories
+
 ### Spec & Planning
 - Defined full database schema: `contacts`, `events`, `contact_events`, `imports`, `segments`, `dedup_jobs`, `dedup_candidates`
 - Specced CSV import pipeline with duplicate file detection (content hash + contact overlap gates)

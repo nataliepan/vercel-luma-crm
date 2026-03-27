@@ -4,11 +4,18 @@ Community builder's intelligence layer over Luma event contacts.
 Solves: 24k+ contacts across many CSVs, different schemas per event, duplicates, no way to segment or do targeted outreach.
 Designed from day one for 200k contacts — every index, job, and query has been chosen with that scale in mind.
 
-## Reference docs
+## Documentation
 
-- `docs/DATA_IMPORT_SPEC.md` — CSV ingestion pipeline, dedup rules, duplicate upload detection, filename parsing
-- `docs/AI_SPEC.md` — AI features, eval rubric, rate limiting, failure modes, prompt logging
-- `docs/INTERVIEW.md` — demo script, architecture narrative, rendering strategy rationale
+- `docs/data_import_spec.md` — CSV ingestion pipeline, dedup rules, duplicate upload detection, filename parsing
+- `docs/ai_spec.md` — AI features, eval rubric, rate limiting, failure modes, prompt logging
+- `docs/interview.md` — demo script, architecture narrative, rendering strategy rationale
+- `docs/architecture.md` — system design, data flow, rendering strategy, key trade-offs
+- `docs/project_status.md` — current progress, what's done, what's next, blockers
+- `docs/changelog.md` — version history, updated after every major milestone or addition
+
+- Update files in the `docs/` folder after major milestones and major additions to the project
+- Use the `/update-docs-and-commit` slash command when making git commits
+
 
 ---
 
@@ -1132,6 +1139,50 @@ REINDEX INDEX CONCURRENTLY idx_contacts_embedding;
 -- Also run periodically to reclaim space from upserts and merges:
 VACUUM ANALYZE contacts;
 ```
+
+---
+
+## Constraints & Policies
+
+**Security — MUST follow:**
+- NEVER expose `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CLERK_SECRET_KEY`, or `DATABASE_URL` to the client — server-side only
+- ALWAYS use environment variables for secrets
+- NEVER commit `.env.local` or any file with API keys
+- Validate and sanitize all user input — especially the AI-generated WHERE clause in NL search
+
+**Code quality:**
+- TypeScript strict mode
+- Run `npm run lint` before committing
+- No `any` types without justification
+
+**Dependencies:**
+- Prefer Shadcn components over adding new UI libraries
+- Minimize external dependencies for MVP
+
+---
+
+## Design Style Guide
+
+**Tech stack:** Next.js (App Router), Tailwind CSS, Shadcn UI
+
+**Visual style:**
+- Clean, minimal interface — the data is the star
+- Use Shadcn components for all interactive elements (buttons, inputs, cards)
+- Tailwind for layout and spacing
+- Responsive design (mobile-first)
+- No dark mode for MVP
+- Keep components focused and small
+
+**UX principles:**
+- Speed over perfection — get data visible fast, iterate quickly
+- One-click actions where possible — imports, merges, segment builds
+- Instant feedback — loading states, import summaries, conflict resolution inline
+- Helpful error messages that suggest next steps
+
+**Copy tone:**
+- Casual and friendly
+- Brief labels and instructions
+- Never show raw database errors to the user
 
 ---
 

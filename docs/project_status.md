@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Planning complete — build not yet started
+## Status: Building — steps 1 and 2 complete
 
 ---
 
@@ -15,20 +15,22 @@ Current progress against the build order defined in CLAUDE.md.
 - [x] AI features specced (header normalization, tag inference, segment builder, outreach drafter, eval rubric)
 - [x] Build order defined and prioritized for demo
 - [x] CLAUDE.md, docs structure, and slash commands set up
+- [x] Next.js 14 scaffolded (App Router, TypeScript, Tailwind, Shadcn UI)
+- [x] All dependencies installed (Neon, Clerk, AI SDK, Vercel Blob, papaparse)
+- [x] **Step 1:** `lib/db.ts` — two pool connections (pooled + direct), migration SQL run against Neon
+- [x] **Step 2:** Clerk auth — `proxy.ts` middleware, ClerkProvider in layout, sign-in/sign-up pages
 
 ---
 
 ## In Progress
 
-- [ ] Nothing yet — ready to start building
+- [ ] Fixing `MIDDLEWARE_INVOCATION_FAILED` error (Next.js 16 proxy.ts rename in progress)
 
 ---
 
 ## Up Next (following build order)
 
-1. DB schema + Neon connection (`lib/db.ts` + migration SQL)
-2. Clerk auth + middleware
-3. CSV upload + schema mapper (`/import` page + `/api/import`)
+3. CSV upload + schema mapper (`/import` page + `/api/import`) ← next
 4. Contact table with basic search (`/contacts`)
 5. NL search evals (`__tests__/evals.test.ts`)
 6. NL search (`lib/nl-search.ts`)

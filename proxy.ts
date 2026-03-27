@@ -2,6 +2,9 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 
 // Why Clerk over NextAuth: faster setup, built-in App Router support,
 // no DB session table needed, managed token rotation out of the box.
+//
+// Why proxy.ts not middleware.ts: Next.js 16 deprecated middleware in
+// favour of the proxy convention. Same functionality, new filename.
 
 const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',

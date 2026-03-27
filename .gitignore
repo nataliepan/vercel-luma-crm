@@ -39,5 +39,10 @@ next-env.d.ts
 .claude/worktrees
 .claude/skills
 
+# Other AI editor configs
+.windsurf/
+.cursor/
+.agents/
+
 # local interview prep — contains personal emails and prep notes
 docs/INTERVIEW.md

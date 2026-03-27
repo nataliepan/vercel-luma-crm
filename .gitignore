@@ -52,3 +52,6 @@ next-env.d.ts
 
 # local interview prep — contains personal emails and prep notes
 docs/INTERVIEW.md
+
+# clerk configuration (can include secrets)
+/.clerk/

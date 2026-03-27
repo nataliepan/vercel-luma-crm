@@ -37,6 +37,12 @@ CREATE TABLE events (
   user_id           TEXT NOT NULL,
   name              TEXT NOT NULL,
   series_name       TEXT,
+  luma_event_id     TEXT,
+  -- Why luma_event_id: Luma encodes a stable evt-XXXX identifier in every row's
+  -- qr_code_url. This is the only reliable key for distinguishing two sessions
+  -- with the same title (e.g. a recurring weekly event). series_name groups them
+  -- for display; luma_event_id decides whether a new import is a re-export or a
+  -- separate session. NULL for non-Luma imports or CSVs with stripped URLs.
   event_date        DATE,
   last_exported_at  TIMESTAMPTZ,
   source_filename   TEXT,
@@ -133,4 +139,8 @@ CREATE INDEX idx_contacts_dedup_unchecked ON contacts(user_id, created_at)
 CREATE INDEX idx_dedup_candidates_user ON dedup_candidates(user_id, status);
 CREATE INDEX idx_contacts_given_email ON contacts(user_id, given_email);
 CREATE INDEX idx_events_series ON events(user_id, series_name);
+CREATE UNIQUE INDEX idx_events_luma_id ON events(user_id, luma_event_id) WHERE luma_event_id IS NOT NULL;
+-- Why partial unique index: enforces one event row per Luma session per user.
+-- Partial (WHERE NOT NULL) allows multiple events without a luma_event_id
+-- (non-Luma CSVs) without violating the constraint.
 CREATE INDEX idx_imports_hash ON imports(user_id, content_hash);

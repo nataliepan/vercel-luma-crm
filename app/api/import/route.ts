@@ -198,62 +198,109 @@ export async function POST(req: Request) {
     eventId = eventResult.rows[0].id
   }
 
-  // Step 8: Row-by-row upsert
+  // Step 8: Bulk upsert using unnest() — O(2 queries) regardless of row count.
+  // Why unnest not row-by-row: 25k contacts × 2 queries = 50k Neon round-trips,
+  // each ~5ms = 4+ minutes. unnest() passes all values as arrays and does the
+  // same work in 2 queries, taking ~1-2s for 25k rows.
   const counts = { newContacts: 0, updatedContacts: 0, existedContacts: 0 }
+
+  // Collect all rows that have an email into parallel arrays for unnest()
+  const upsertEmails: string[] = []
+  const upsertNames: (string | null)[] = []
+  const upsertCompanies: (string | null)[] = []
+  const upsertRoles: (string | null)[] = []
+  const upsertLinkedinUrls: (string | null)[] = []
+  const upsertGivenEmails: (string | null)[] = []
+  const upsertNotes: (string | null)[] = []
+  const upsertRawFields: string[] = []
+  const upsertFieldsList: ReturnType<typeof extractFields>[] = []
 
   for (const row of parsed.data) {
     const email = emailHeader ? row[emailHeader]?.toLowerCase()?.trim() : null
     if (!email) continue
-
     const fields = extractFields(row, columnMap)
+    upsertEmails.push(email)
+    upsertNames.push(fields.name)
+    upsertCompanies.push(fields.company)
+    upsertRoles.push(fields.role)
+    upsertLinkedinUrls.push(fields.linkedinUrl)
+    upsertGivenEmails.push(fields.givenEmail)
+    upsertNotes.push(fields.notes)
+    upsertRawFields.push(JSON.stringify(row))
+    upsertFieldsList.push(fields)
+  }
 
-    // Why ON CONFLICT DO UPDATE: re-importing the same CSV is safe and idempotent.
-    // New fields from a re-export overwrite stale ones without creating duplicates.
+  if (upsertEmails.length > 0) {
+    // Bulk contact upsert — one round-trip for all rows.
     // Why COALESCE: never overwrite an existing value with null — only update when
     // the incoming row has a value.
-    // Why reset embedding_status to 'pending' on UPDATE: stale embeddings cause
-    // incorrect clustering in NL search and dedup.
-    // Why xmax = 0: standard Postgres trick to detect INSERT vs UPDATE in a
-    // RETURNING clause without a separate SELECT.
-    const upsertResult = await db.query(`
+    // Why xmax = 0: Postgres sets xmax=0 on fresh inserts, non-zero on updates —
+    // the only way to distinguish INSERT vs UPDATE in a RETURNING clause.
+    const contactResult = await db.query(`
       INSERT INTO contacts
         (user_id, email, name, company, role, linkedin_url, given_email, notes, raw_fields, embedding_status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+      SELECT $1, d.email, d.name, d.company, d.role, d.linkedin_url, d.given_email, d.notes, d.raw_fields::jsonb, 'pending'
+      FROM unnest(
+        $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[]
+      ) AS d(email, name, company, role, linkedin_url, given_email, notes, raw_fields)
       ON CONFLICT ON CONSTRAINT uq_contacts_user_email DO UPDATE SET
-        name         = COALESCE(EXCLUDED.name, contacts.name),
-        company      = COALESCE(EXCLUDED.company, contacts.company),
-        role         = COALESCE(EXCLUDED.role, contacts.role),
-        linkedin_url = COALESCE(EXCLUDED.linkedin_url, contacts.linkedin_url),
-        given_email  = COALESCE(EXCLUDED.given_email, contacts.given_email),
-        notes        = COALESCE(EXCLUDED.notes, contacts.notes),
-        raw_fields   = EXCLUDED.raw_fields,
+        name             = COALESCE(EXCLUDED.name, contacts.name),
+        company          = COALESCE(EXCLUDED.company, contacts.company),
+        role             = COALESCE(EXCLUDED.role, contacts.role),
+        linkedin_url     = COALESCE(EXCLUDED.linkedin_url, contacts.linkedin_url),
+        given_email      = COALESCE(EXCLUDED.given_email, contacts.given_email),
+        notes            = COALESCE(EXCLUDED.notes, contacts.notes),
+        raw_fields       = EXCLUDED.raw_fields,
         embedding_status = 'pending',
-        updated_at   = now()
-      RETURNING id,
-        (xmax = 0) AS is_insert,
-        -- Why xmax = 0: standard Postgres trick — xmax is 0 on fresh inserts, non-zero on updates.
-        -- We can't reference EXCLUDED in RETURNING, so fields_changed is detected via xmax only.
-        (xmax != 0) AS fields_changed
-    `, [userId, email, fields.name, fields.company, fields.role, fields.linkedinUrl, fields.givenEmail, fields.notes, JSON.stringify(row)])
+        updated_at       = now()
+      RETURNING id, email, (xmax = 0) AS is_insert, (xmax != 0) AS fields_changed
+    `, [userId, upsertEmails, upsertNames, upsertCompanies, upsertRoles, upsertLinkedinUrls, upsertGivenEmails, upsertNotes, upsertRawFields])
 
-    const { id: contactId, is_insert, fields_changed } = upsertResult.rows[0]
-    if (is_insert) counts.newContacts++
-    else if (fields_changed) counts.updatedContacts++
-    else counts.existedContacts++
+    // Build email → contactId lookup and tally counts
+    const emailToContactId = new Map<string, string>()
+    for (const row of contactResult.rows) {
+      emailToContactId.set(row.email, row.id)
+      if (row.is_insert) counts.newContacts++
+      else if (row.fields_changed) counts.updatedContacts++
+      else counts.existedContacts++
+    }
 
-    // Upsert contact_events junction
+    // Build parallel arrays for contact_events bulk upsert
+    const ceContactIds: string[] = []
+    const ceRegisteredAts: (Date | null)[] = []
+    const ceApprovalStatuses: string[] = []
+    const ceHasJoined: boolean[] = []
+    const ceCustomResponses: string[] = []
+    const ceRawRows: string[] = []
+
+    for (let i = 0; i < upsertEmails.length; i++) {
+      const contactId = emailToContactId.get(upsertEmails[i])
+      if (!contactId) continue
+      const fields = upsertFieldsList[i]
+      ceContactIds.push(contactId)
+      ceRegisteredAts.push(fields.registeredAt)
+      ceApprovalStatuses.push(fields.approvalStatus)
+      ceHasJoined.push(fields.hasJoinedEvent)
+      ceCustomResponses.push(JSON.stringify(fields.customResponses))
+      ceRawRows.push(upsertRawFields[i])
+    }
+
+    // Bulk contact_events upsert — one round-trip for all rows.
     // Why ON CONFLICT DO UPDATE not DO NOTHING: approval status may change
-    // between exports (pending → approved). We want the latest state.
+    // between exports (pending → approved). We always want the latest state.
     await db.query(`
       INSERT INTO contact_events
         (contact_id, event_id, registered_at, approval_status, has_joined_event, custom_responses, raw_row)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      SELECT d.contact_id, $1, d.registered_at, d.approval_status, d.has_joined_event, d.custom_responses::jsonb, d.raw_row::jsonb
+      FROM unnest(
+        $2::uuid[], $3::timestamptz[], $4::text[], $5::boolean[], $6::text[], $7::text[]
+      ) AS d(contact_id, registered_at, approval_status, has_joined_event, custom_responses, raw_row)
       ON CONFLICT (contact_id, event_id) DO UPDATE SET
         approval_status  = EXCLUDED.approval_status,
         has_joined_event = EXCLUDED.has_joined_event,
         custom_responses = EXCLUDED.custom_responses,
         raw_row          = EXCLUDED.raw_row
-    `, [contactId, eventId, fields.registeredAt, fields.approvalStatus, fields.hasJoinedEvent, JSON.stringify(fields.customResponses), JSON.stringify(row)])
+    `, [eventId, ceContactIds, ceRegisteredAts, ceApprovalStatuses, ceHasJoined, ceCustomResponses, ceRawRows])
   }
 
   // Step 9: Update event approval counts and event_date

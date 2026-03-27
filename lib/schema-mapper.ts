@@ -30,7 +30,7 @@ export async function mapSchema(headers: string[]): Promise<Record<string, strin
         role: 'user',
         content: `Map these CSV headers to canonical fields:\n${JSON.stringify(headers)}\n\nCanonical fields: ${CANONICAL_FIELDS.join(', ')}`
       }],
-      maxOutputTokens: 500,
+      maxOutputTokens: 1024,
     })
 
     // Strip markdown code fences if the model wraps the response in ```json ... ```

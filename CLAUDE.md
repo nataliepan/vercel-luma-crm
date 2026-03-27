@@ -16,6 +16,13 @@ Designed from day one for 200k contacts — every index, job, and query has been
 - Update files in the `docs/` folder after major milestones and major additions to the project
 - Use the `/update-docs-and-commit` slash command when making git commits
 
+---
+
+## Skills
+
+When writing React or frontend code, read and follow the guidelines in:
+- `.claude/skills/next-best-practices.md`
+- `.claude/skills/vercel-react-best-practices.md`
 
 ---
 

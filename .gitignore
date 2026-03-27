@@ -35,9 +35,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Claude Code worktrees and memory
+# Claude Code — ignore personal/generated, commit settings + commands for sharing
 .claude/worktrees
 .claude/skills
+.claude/settings.local.json
 
 # Other AI editor configs
 .windsurf/

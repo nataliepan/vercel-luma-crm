@@ -6,6 +6,13 @@ All notable changes to the Luma CRM project are documented here.
 
 ## [Unreleased]
 
+### Feature
+- Added `/contacts` page with keyset cursor pagination (O(1) at any depth), debounced trigram search, embed status badge, and load-more
+- Added `GET /api/contacts` and `GET /api/contacts/count` endpoints
+- Root `/` now redirects to `/contacts`
+- Added minimal nav bar (Contacts, Import) to root layout
+
+
 ### Performance
 - Replaced row-by-row contact upsert with `unnest()` bulk upsert — imports 25k contacts in ~2s instead of 4+ minutes (50k round-trips → 2 queries)
 

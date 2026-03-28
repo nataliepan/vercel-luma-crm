@@ -6,6 +6,24 @@ All notable changes to the Luma CRM project are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Dashboard** (`/dashboard`) — SSR page with React Suspense streaming for 4 independent stat cards (contacts, events, segments, dedup candidates) + recent contacts table + quick action links; each async RSC wrapped in try/catch with graceful `StatErrorCard` fallback
+- **`GET /api/dashboard/stats`** — single endpoint returning all dashboard stats via `Promise.all`
+- **Error boundaries** — `error.tsx` for every route (dashboard, contacts, segments, outreach, import) + `global-error.tsx` for root layout failures (renders standalone HTML, no layout dependency)
+- **Rate limiting** (`lib/rate-limit.ts`) — in-memory sliding window limiter; integrated on all AI endpoints (outreach 20 req/min, segments 30 req/min)
+- **AI call audit logging** (`lib/ai-log.ts`) — fire-and-forget logger to `ai_logs` DB table; captures feature, model, input/output (truncated to 2k chars), token usage, and duration; integrated in outreach, segments, NL search, and hallucination check
+- **Hallucination check** (`POST /api/outreach/check`) — post-generation accuracy check on outreach drafts; auto-runs after stream completes; amber warning banner in UI surfaces flagged issues before the user copies/sends
+- Dashboard added as first item in sidebar nav
+
+### Fixed
+- **Production-grade error handling audit** across the entire codebase:
+  - All API route `catch` blocks now return generic error messages (never raw `err.message` — prevents leaking DB connection strings or API key errors)
+  - `req.json()` calls wrapped in try/catch returning 400 on malformed bodies (outreach, segments POST/PATCH, segment contacts POST)
+  - `parseInt()` calls use explicit radix 10 and optional chaining on `rows[0]?.count ?? '0'`
+  - Blob path sanitized (`file.name.replace(/[^a-z0-9._-]/gi, '_')`) to prevent path traversal
+  - `useEffect` cleanup for debounce timers and abort controllers in contacts, outreach, and segments pages
+  - NL search now logs AI calls with duration tracking and logs errors before falling back to trigram search
+
 ### Fixed
 - **Error handling hardening** — consistent try/catch across all API routes and client fetch paths:
   - `GET /api/contacts` and `GET /api/contacts/count` — bare `db.query()` calls now wrapped; return `500` with `{ error }` JSON on failure instead of unhandled exceptions

@@ -181,11 +181,18 @@ function SegmentCard({
       setContactsLoading(true)
       try {
         const res = await fetch(`/api/segments/${segment.id}/contacts`)
-        if (res.ok) {
-          const data = await res.json()
+        const data = await res.json()
+        if (!res.ok) {
+          // Surface the error inline rather than silently showing empty state
+          setContacts([])
+          console.error('Failed to load contacts:', data?.error)
+        } else {
           setContacts(data.contacts)
           setContactsCapped(data.capped)
         }
+      } catch (err) {
+        console.error('Failed to load contacts:', err)
+        setContacts([])
       } finally {
         setContactsLoading(false)
       }
@@ -228,8 +235,12 @@ function SegmentCard({
     setRefreshing(true)
     try {
       const res = await fetch(`/api/segments/${segment.id}/refresh`, { method: 'POST' })
-      if (res.ok) {
-        const data = await res.json()
+      const data = await res.json()
+      if (!res.ok) {
+        console.error('Failed to refresh segment:', data?.error)
+        // Silently fail — count badge stays showing the cached value rather than
+        // crashing the card. Not surfacing to UI since refresh is non-critical.
+      } else {
         setCount(data.contact_count)
         onCountUpdated(segment.id, data.contact_count)
         // Invalidate cached contacts so the list reloads on next expand.
@@ -238,6 +249,8 @@ function SegmentCard({
         setRefinedContacts(null)
         setRefineText('')
       }
+    } catch (err) {
+      console.error('Failed to refresh segment:', err)
     } finally {
       setRefreshing(false)
     }
@@ -246,8 +259,20 @@ function SegmentCard({
   async function handleDelete() {
     if (!confirm(`Delete segment "${segment.label}"?`)) return
     setDeleting(true)
-    await fetch(`/api/segments?id=${segment.id}`, { method: 'DELETE' })
-    onDelete(segment.id)
+    try {
+      const res = await fetch(`/api/segments?id=${segment.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        alert(data?.error ?? 'Failed to delete segment — please try again.')
+        setDeleting(false)
+        return
+      }
+      // Only remove from the list after the server confirms deletion
+      onDelete(segment.id)
+    } catch {
+      alert('Network error — could not delete segment. Please try again.')
+      setDeleting(false)
+    }
   }
 
   // Fetch a refined contact list from the server.
@@ -680,10 +705,16 @@ export default function SegmentsPage() {
     setLoadingSegments(true)
     try {
       const res = await fetch('/api/segments')
-      if (res.ok) {
-        const data = await res.json()
+      const data = await res.json()
+      if (!res.ok) {
+        console.error('Failed to load segments:', data?.error)
+        // Leave segments as empty array — the UI shows "No segments yet" which
+        // is a valid degraded state rather than an unhandled blank page.
+      } else {
         setSegments(data.segments ?? [])
       }
+    } catch (err) {
+      console.error('Failed to load segments:', err)
     } finally {
       setLoadingSegments(false)
     }

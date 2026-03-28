@@ -6,6 +6,17 @@ All notable changes to the Luma CRM project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- **Error handling hardening** — consistent try/catch across all API routes and client fetch paths:
+  - `GET /api/contacts` and `GET /api/contacts/count` — bare `db.query()` calls now wrapped; return `500` with `{ error }` JSON on failure instead of unhandled exceptions
+  - `POST /api/segments/[id]/refresh` — count query and UPDATE wrapped; returns `500` on DB failure
+  - `handleDelete` in segment card — previously called `onDelete()` unconditionally even if the DELETE request failed; now only removes from list after server confirms deletion, shows `alert()` on failure
+  - `handleToggleContacts` — added `catch` branch that sets `contacts = []` and logs instead of silently swallowing fetch errors
+  - `handleRefresh` — added `catch` branch; non-ok responses logged instead of silently ignored
+  - `loadSegments` (segments page + outreach page) — non-ok responses now logged; `catch` block added for network errors
+  - `fetchContacts` in contacts page — replaced `JSON.parse(res.text())` with `res.json()` in a try/catch; malformed responses (e.g. Clerk HTML redirects) degrade to empty state rather than crashing
+  - Outreach stream error display — raw HTML error responses (e.g. auth redirects) are now replaced with a generic status message instead of dumping markup into the error box
+
 ### Added
 - **Outreach drafter** (`/outreach` page + `POST /api/outreach`) — pick a saved segment, choose outreach type (event invite / newsletter / speaker ask / sponsor ask / general), describe your goal, and get a streaming AI draft word-by-word; Regenerate and Copy buttons appear on completion
 - `POST /api/outreach` — fetches segment metadata + runs filter to sample up to 10 contacts (name/role/company only — email/phone/linkedin never sent to AI); streams response via `@anthropic-ai/sdk` messages.stream → plain-text ReadableStream; errors encoded inline so the client always sees feedback

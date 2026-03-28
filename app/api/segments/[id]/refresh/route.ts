@@ -37,17 +37,22 @@ export async function POST(
     return NextResponse.json({ error: 'Segment filter is invalid' }, { status: 422 })
   }
 
-  const countResult = await db.query(
-    `SELECT COUNT(*) FROM contacts
-     WHERE user_id = $1 AND merged_into_id IS NULL AND (${safeSQL})`,
-    [userId]
-  )
-  const newCount = parseInt(countResult.rows[0].count, 10)
+  try {
+    const countResult = await db.query(
+      `SELECT COUNT(*) FROM contacts
+       WHERE user_id = $1 AND merged_into_id IS NULL AND (${safeSQL})`,
+      [userId]
+    )
+    const newCount = parseInt(countResult.rows[0].count, 10)
 
-  await db.query(
-    `UPDATE segments SET contact_count = $1, updated_at = now() WHERE id = $2 AND user_id = $3`,
-    [newCount, id, userId]
-  )
+    await db.query(
+      `UPDATE segments SET contact_count = $1, updated_at = now() WHERE id = $2 AND user_id = $3`,
+      [newCount, id, userId]
+    )
 
-  return NextResponse.json({ contact_count: newCount })
+    return NextResponse.json({ contact_count: newCount })
+  } catch (err) {
+    console.error('POST /api/segments/[id]/refresh error:', err)
+    return NextResponse.json({ error: 'Failed to refresh segment count' }, { status: 500 })
+  }
 }

@@ -108,9 +108,14 @@ export default function ContactsPage() {
       return
     }
 
-    const text = await res.text()
-    if (!text) return
-    const data = JSON.parse(text)
+    let data: { contacts?: Contact[]; nextCursor?: string | null }
+    try {
+      data = await res.json()
+    } catch {
+      // Malformed JSON (e.g. Clerk redirect returned HTML) — treat as empty
+      if (!cursor) setContacts([])
+      return
+    }
 
     if (cursor) {
       setContacts(prev => [...prev, ...(data.contacts ?? [])])

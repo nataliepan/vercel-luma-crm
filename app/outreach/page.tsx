@@ -42,11 +42,16 @@ export default function OutreachPage() {
     async function load() {
       try {
         const res = await fetch('/api/segments')
-        if (res.ok) {
-          const data = await res.json()
+        const data = await res.json()
+        if (!res.ok) {
+          console.error('Failed to load segments:', data?.error)
+          // Degrade gracefully — the picker shows "No segments yet" with a link to create one
+        } else {
           setSegments(data.segments ?? [])
           if (data.segments?.length > 0) setSelectedSegmentId(data.segments[0].id)
         }
+      } catch (err) {
+        console.error('Failed to load segments:', err)
       } finally {
         setSegmentsLoading(false)
       }
@@ -82,8 +87,10 @@ export default function OutreachPage() {
       })
 
       if (!res.ok) {
-        const err = await res.text()
-        setStreamError(err || `Request failed (${res.status})`)
+        // Avoid showing raw HTML (e.g. auth redirects) — extract plain text or use a generic message
+        const errText = await res.text()
+        const isHtml = errText.trimStart().startsWith('<')
+        setStreamError(isHtml ? `Request failed (${res.status})` : errText || `Request failed (${res.status})`)
         return
       }
 

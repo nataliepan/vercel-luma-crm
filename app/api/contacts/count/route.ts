@@ -6,9 +6,14 @@ export async function GET() {
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const result = await db.query(
-    `SELECT COUNT(*) FROM contacts WHERE user_id = $1 AND merged_into_id IS NULL`,
-    [userId]
-  )
-  return NextResponse.json({ count: parseInt(result.rows[0].count) })
+  try {
+    const result = await db.query(
+      `SELECT COUNT(*) FROM contacts WHERE user_id = $1 AND merged_into_id IS NULL`,
+      [userId]
+    )
+    return NextResponse.json({ count: parseInt(result.rows[0].count) })
+  } catch (err) {
+    console.error('GET /api/contacts/count error:', err)
+    return NextResponse.json({ error: 'Failed to fetch contact count' }, { status: 500 })
+  }
 }

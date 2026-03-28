@@ -53,6 +53,8 @@ Current progress against the build order defined in CLAUDE.md.
   - Only name/role/company sent to AI — email/phone/linkedin never leave the DB
   - Regenerate and Copy on completion; errors surface inline in red box
   - Note: `@ai-sdk/anthropic` v3 has wrong base URL bug; route uses `@anthropic-ai/sdk` directly
+  - Editable template draft — user can tweak `[name]`/`[company]`/`[role]` brackets or rewrite sections
+  - Personalize per contact: lazy-load segment contacts, cycle through with ← → navigator, filled preview auto-substitutes brackets, "Copy for [First Name]" copies that contact's version; unfilled-placeholder warning when contact data is sparse
 - [x] **Step 9:** Dashboard + production-grade error handling & AI safety
   - SSR dashboard with React Suspense streaming 4 stat cards + recent contacts + quick actions
   - Each async RSC wrapped in try/catch with graceful `StatErrorCard` fallback

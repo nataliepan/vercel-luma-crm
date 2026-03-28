@@ -160,13 +160,17 @@ You will receive a segment description and a sample of contacts in that segment.
 
 Rules:
 - Write in first person from the community builder's perspective
-- Reference specific details from the contact's background when available
+- Use [name], [company], and [role] as placeholders wherever you would reference the
+  specific recipient — these will be filled in per-contact before sending.
+  Example: "Hi [name], I loved seeing what you're building at [company]..."
+- Only use [name], [company], [role] — no other bracket placeholders
 - Never invent facts not present in the contact data
-- Never include placeholder text like [YOUR NAME] — write as if from the builder
+- Never add a sign-off or signature — the sender will add their own
 - Keep to 150-200 words
 - Return only the message body, no subject line unless asked
 
-If contact data is sparse, write a warm but general message appropriate for the segment.
+If contact data is sparse, write a warm but general message using the placeholders
+where appropriate for the segment.
 `
 
 export const HALLUCINATION_CHECK_PROMPT = `

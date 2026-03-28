@@ -4,13 +4,19 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
-import { Sparkles, Copy, Check, RefreshCw, ChevronDown, AlertTriangle } from 'lucide-react'
+import { Sparkles, Copy, Check, RefreshCw, ChevronDown, ChevronLeft, ChevronRight, Users, AlertTriangle } from 'lucide-react'
 
 type Segment = {
   id: string
   label: string
   description: string
   contact_count: number
+}
+
+type Contact = {
+  name: string | null
+  role: string | null
+  company: string | null
 }
 
 const OUTREACH_TYPES = [
@@ -20,6 +26,25 @@ const OUTREACH_TYPES = [
   { value: 'sponsor_ask', label: 'Sponsor ask' },
   { value: 'general', label: 'General outreach' },
 ]
+
+// Bracket placeholders the AI is instructed to use.
+// Substitution is case-insensitive so [Name] and [name] both work.
+const PLACEHOLDERS = ['name', 'company', 'role'] as const
+type Placeholder = typeof PLACEHOLDERS[number]
+
+/** Fill [name], [company], [role] placeholders with values from a contact. */
+function fillTemplate(template: string, contact: Contact): string {
+  const firstName = contact.name?.split(' ')[0] ?? null
+  return template
+    .replace(/\[name\]/gi, firstName ?? '[name]')
+    .replace(/\[company\]/gi, contact.company ?? '[company]')
+    .replace(/\[role\]/gi, contact.role ?? '[role]')
+}
+
+/** Return true if the template still has any unfilled placeholders after substitution. */
+function hasUnfilledPlaceholders(filled: string): boolean {
+  return PLACEHOLDERS.some(p => filled.toLowerCase().includes(`[${p}]`))
+}
 
 export default function OutreachPage() {
   const [segments, setSegments] = useState<Segment[]>([])
@@ -32,6 +57,13 @@ export default function OutreachPage() {
   const [draft, setDraft] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamError, setStreamError] = useState<string | null>(null)
+
+  // Personalization state
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [contactsLoading, setContactsLoading] = useState(false)
+  const [contactIndex, setContactIndex] = useState(0)
+  const [personalizeCopied, setPersonalizeCopied] = useState(false)
+  const personalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [copied, setCopied] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -72,6 +104,12 @@ export default function OutreachPage() {
     load()
   }, [])
 
+  // Reset contacts when segment changes
+  useEffect(() => {
+    setContacts([])
+    setContactIndex(0)
+  }, [selectedSegmentId])
+
   const selectedSegment = segments.find(s => s.id === selectedSegmentId)
 
   // Why plain fetch + ReadableStream not useChat: useChat in AI SDK v6 changed
@@ -92,6 +130,8 @@ export default function OutreachPage() {
     setHallucinationIssues([])
     setCheckingHallucinations(false)
     setIsStreaming(true)
+    // Reset personalization when regenerating — stale contacts stay loaded for reuse
+    setContactIndex(0)
 
     let completedDraft = ''
 
@@ -178,7 +218,41 @@ export default function OutreachPage() {
     copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
   }
 
+  // Lazy-load contacts for the selected segment on first "Personalize" click.
+  // Why lazy not eager: most users will just copy the template — loading contacts
+  // on every segment switch would be wasteful. Only fetch when explicitly requested.
+  async function handlePersonalize() {
+    if (contacts.length > 0) return // already loaded
+    if (!selectedSegmentId) return
+
+    setContactsLoading(true)
+    try {
+      const res = await fetch(`/api/segments/${selectedSegmentId}/contacts`)
+      const data = await res.json()
+      if (res.ok) {
+        setContacts(data.contacts ?? [])
+        setContactIndex(0)
+      } else {
+        console.error('Failed to load contacts:', data?.error)
+      }
+    } catch (err) {
+      console.error('Failed to load contacts:', err)
+    } finally {
+      setContactsLoading(false)
+    }
+  }
+
+  function handlePersonalizeCopy(filled: string) {
+    navigator.clipboard.writeText(filled)
+    setPersonalizeCopied(true)
+    if (personalizeTimerRef.current) clearTimeout(personalizeTimerRef.current)
+    personalizeTimerRef.current = setTimeout(() => setPersonalizeCopied(false), 2000)
+  }
+
   const canGenerate = !!selectedSegmentId && !!context.trim() && !isStreaming
+  const currentContact = contacts[contactIndex] ?? null
+  const filledDraft = currentContact ? fillTemplate(draft, currentContact) : ''
+  const unfilled = currentContact ? hasUnfilledPlaceholders(filledDraft) : false
 
   return (
     <div className="flex flex-col h-full">
@@ -282,11 +356,11 @@ export default function OutreachPage() {
             </div>
           )}
 
-          {/* Streaming draft output */}
+          {/* Draft — editable textarea so the user can tweak the template */}
           {(isStreaming || draft) && (
             <div className="rounded-lg border bg-white">
               <div className="flex items-center justify-between px-4 py-2.5 border-b bg-gray-50">
-                <span className="text-xs font-medium text-gray-500">Draft</span>
+                <span className="text-xs font-medium text-gray-500">Template draft</span>
                 <div className="flex items-center gap-2">
                   {isStreaming && (
                     <span className="flex items-center gap-1.5 text-xs text-gray-400">
@@ -309,19 +383,121 @@ export default function OutreachPage() {
                       >
                         {copied
                           ? <><Check className="w-3 h-3 text-green-500" /> Copied</>
-                          : <><Copy className="w-3 h-3" /> Copy</>}
+                          : <><Copy className="w-3 h-3" /> Copy template</>}
                       </button>
                     </>
                   )}
                 </div>
               </div>
-              {/* whitespace-pre-wrap preserves paragraph breaks from the model output */}
-              <div className="px-4 py-4 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
-                {draft}
-                {isStreaming && (
-                  <span className="inline-block w-0.5 h-4 bg-gray-400 animate-pulse ml-0.5 align-middle" />
+              {/* Editable textarea — user can adjust [name]/[company]/[role] brackets or
+                  rewrite sections. Changes persist in `draft` state so personalization
+                  uses the updated version automatically. */}
+              <textarea
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                disabled={isStreaming}
+                rows={8}
+                className="w-full px-4 py-4 text-sm text-gray-800 leading-relaxed resize-none focus:outline-none rounded-b-lg disabled:bg-transparent"
+              />
+              {draft && !isStreaming && (
+                <div className="px-4 pb-3">
+                  <p className="text-xs text-gray-400">
+                    Edit the template above, then use{' '}
+                    <span className="font-mono bg-gray-100 px-1 rounded">[name]</span>,{' '}
+                    <span className="font-mono bg-gray-100 px-1 rounded">[company]</span>,{' '}
+                    <span className="font-mono bg-gray-100 px-1 rounded">[role]</span>{' '}
+                    as placeholders — then personalize below.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Personalization panel — lazy-loaded on first click */}
+          {draft && !isStreaming && (
+            <div className="rounded-lg border bg-white">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b bg-gray-50">
+                <span className="text-xs font-medium text-gray-500">Personalize per contact</span>
+                {contacts.length > 0 && (
+                  <span className="text-xs text-gray-400">
+                    {contactIndex + 1} / {contacts.length}
+                  </span>
                 )}
               </div>
+
+              {contacts.length === 0 ? (
+                <div className="px-4 py-4 flex items-center justify-between">
+                  <p className="text-sm text-gray-500">
+                    Fill in brackets for each contact and copy one by one.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePersonalize}
+                    disabled={contactsLoading}
+                    className="flex items-center gap-1.5 text-xs shrink-0 ml-4"
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    {contactsLoading ? 'Loading…' : 'Load contacts'}
+                  </Button>
+                </div>
+              ) : (
+                <div className="px-4 py-4 space-y-3">
+                  {/* Contact navigator */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => { setContactIndex(i => Math.max(0, i - 1)); setPersonalizeCopied(false) }}
+                      disabled={contactIndex === 0}
+                      className="p-1 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      aria-label="Previous contact"
+                    >
+                      <ChevronLeft className="w-4 h-4 text-gray-500" />
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {currentContact?.name ?? '(no name)'}
+                      </p>
+                      <p className="text-xs text-gray-400 truncate">
+                        {[currentContact?.role, currentContact?.company].filter(Boolean).join(' · ') || 'No role or company'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => { setContactIndex(i => Math.min(contacts.length - 1, i + 1)); setPersonalizeCopied(false) }}
+                      disabled={contactIndex === contacts.length - 1}
+                      className="p-1 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                      aria-label="Next contact"
+                    >
+                      <ChevronRight className="w-4 h-4 text-gray-500" />
+                    </button>
+                  </div>
+
+                  {/* Filled preview — read-only */}
+                  {unfilled && (
+                    <p className="text-xs text-amber-600">
+                      Some placeholders couldn&apos;t be filled — this contact is missing data for the highlighted fields.
+                    </p>
+                  )}
+                  <div className="rounded-md border bg-gray-50 px-3 py-3 text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+                    {filledDraft}
+                  </div>
+
+                  {/* Copy this contact's version */}
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-gray-400">
+                      Copy, send, then move to the next →
+                    </p>
+                    <button
+                      onClick={() => handlePersonalizeCopy(filledDraft)}
+                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-gray-200 hover:border-gray-400 hover:text-gray-700 text-gray-500 transition-colors"
+                    >
+                      {personalizeCopied
+                        ? <><Check className="w-3 h-3 text-green-500" /> Copied!</>
+                        : <><Copy className="w-3 h-3" /> Copy for {currentContact?.name?.split(' ')[0] ?? 'contact'}</>
+                      }
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

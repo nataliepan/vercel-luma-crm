@@ -1,5 +1,5 @@
 /**
- * evals.test.ts — NL search + hallucination evals
+ * evals.test.ts — NL search + hallucination + dedup evals
  *
  * Why write evals before nl-search.ts is complete: tests define the contract.
  * If we write tests after implementation, we risk writing tests that match the
@@ -7,10 +7,16 @@
  *
  * Run: npm test
  * Timeout: AI calls can take 5-15s — each test has an explicit timeout.
+ *
+ * Dedup evals require seeded test data:
+ *   npx tsx scripts/seed-test-data.ts
+ *   Then embed the test contacts (POST /api/embed or dashboard button)
  */
 
 import { generateWhereClause, validateSQL } from '../lib/nl-search'
 import { checkForHallucinations } from '../lib/prompts'
+import { runDedupJob } from '../lib/dedup'
+import { db } from '../lib/db'
 
 // ---------------------------------------------------------------------------
 // NL Search evals
@@ -153,4 +159,109 @@ describe('Outreach hallucination checks', () => {
     const result = await checkForHallucinations(generalDraft, contact)
     expect(result.flagged).toBe(false)
   }, 20_000)
+})
+
+// ---------------------------------------------------------------------------
+// Dedup precision/recall eval on seeded test data
+// ---------------------------------------------------------------------------
+// Prerequisites:
+//   1. npx tsx scripts/seed-test-data.ts  (seeds 10 known duplicate pairs)
+//   2. Embed the test contacts (embeddings must exist for vector similarity pass)
+//
+// Why precision AND recall: false merges (low precision) are worse than missed
+// duplicates (low recall) — but we need both above 0.8 to be useful.
+
+describe('Dedup precision/recall', () => {
+  const TEST_USER_ID = 'test_dedup_eval_user'
+
+  // Check if test data exists before running
+  let hasTestData = false
+
+  beforeAll(async () => {
+    try {
+      const check = await db.query(
+        `SELECT COUNT(*) FROM test_known_pairs WHERE user_id = $1`,
+        [TEST_USER_ID]
+      )
+      hasTestData = parseInt(check.rows[0].count) > 0
+    } catch {
+      // Table doesn't exist — test data not seeded
+      hasTestData = false
+    }
+  })
+
+  afterAll(async () => {
+    // Clean up dedup candidates and jobs from this test run, but leave
+    // contacts and known_pairs so the test can be re-run without re-seeding.
+    if (hasTestData) {
+      await db.query(`DELETE FROM dedup_candidates WHERE user_id = $1`, [TEST_USER_ID])
+      await db.query(`DELETE FROM dedup_jobs WHERE user_id = $1`, [TEST_USER_ID])
+      // Reset last_dedup_checked_at so the test can be re-run
+      await db.query(
+        `UPDATE contacts SET last_dedup_checked_at = NULL WHERE user_id = $1`,
+        [TEST_USER_ID]
+      )
+    }
+  })
+
+  it('achieves recall >= 0.8 and precision >= 0.8 on known pairs', async () => {
+    if (!hasTestData) {
+      console.log('Skipping dedup eval — run `npx tsx scripts/seed-test-data.ts` first')
+      return
+    }
+
+    // Check that embeddings exist for test contacts
+    const embeddedCount = await db.query(
+      `SELECT COUNT(*) FROM contacts WHERE user_id = $1 AND embedding IS NOT NULL`,
+      [TEST_USER_ID]
+    )
+    if (parseInt(embeddedCount.rows[0].count) === 0) {
+      console.log('Skipping dedup eval — test contacts have no embeddings. Run the embedding pipeline first.')
+      return
+    }
+
+    const knownPairs = await db.query(
+      `SELECT contact_a_id, contact_b_id FROM test_known_pairs WHERE user_id = $1`,
+      [TEST_USER_ID]
+    )
+    const knownPairSet = new Set(
+      knownPairs.rows.map((p: { contact_a_id: string; contact_b_id: string }) =>
+        `${p.contact_a_id}:${p.contact_b_id}`
+      )
+    )
+
+    // Create and run a dedup job for the test user
+    const jobRes = await db.query(
+      `INSERT INTO dedup_jobs (user_id, status) VALUES ($1, 'pending') RETURNING id`,
+      [TEST_USER_ID]
+    )
+    await runDedupJob(jobRes.rows[0].id, TEST_USER_ID)
+
+    const candidates = await db.query(
+      `SELECT contact_a_id, contact_b_id FROM dedup_candidates WHERE user_id = $1`,
+      [TEST_USER_ID]
+    )
+    const foundPairSet = new Set(
+      candidates.rows.map((p: { contact_a_id: string; contact_b_id: string }) =>
+        `${p.contact_a_id}:${p.contact_b_id}`
+      )
+    )
+
+    const truePositives = [...knownPairSet].filter((p) => foundPairSet.has(p)).length
+    const falseNegatives = knownPairs.rows.length - truePositives
+    const falsePositives = [...foundPairSet].filter((p) => !knownPairSet.has(p)).length
+
+    const recall = knownPairs.rows.length > 0
+      ? truePositives / knownPairs.rows.length
+      : 1
+    const precision = (truePositives + falsePositives) > 0
+      ? truePositives / (truePositives + falsePositives)
+      : 1
+
+    console.log(`Dedup eval — recall: ${recall.toFixed(2)}, precision: ${precision.toFixed(2)}`)
+    console.log(`  True positives: ${truePositives}, False negatives: ${falseNegatives}, False positives: ${falsePositives}`)
+
+    expect(recall).toBeGreaterThanOrEqual(0.8)
+    expect(precision).toBeGreaterThanOrEqual(0.8)
+  }, 60_000) // 60s — runs real embeddings + dedup job
 })

@@ -12,6 +12,7 @@ import {
   ArrowRight,
 } from 'lucide-react'
 import { EmbedButton } from '@/components/embed-button'
+import { DedupButton } from '@/components/dedup-button'
 
 // Why SSR + Suspense: stats come from separate DB queries (contact count,
 // event count, segment count, dedup candidates). Suspense lets each stream
@@ -474,6 +475,7 @@ export default async function DashboardPage() {
             <div className="space-y-4">
               <QuickActions />
               <EmbedButton />
+              <DedupButton />
             </div>
           </div>
         </div>

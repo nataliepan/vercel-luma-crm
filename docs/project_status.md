@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–11 complete, step 12 next
+## Status: Building — steps 1–13 complete, step 14 next
 
 ---
 
@@ -78,8 +78,21 @@ Current progress against the build order defined in CLAUDE.md.
 - [x] **Step 11:** `vercel.json` + cron routes
   - `vercel.json` — cron schedules (embed 2am UTC, dedup 3am UTC) + function `maxDuration` configs
   - `GET /api/cron/embed` — nightly cron: queries all users with pending embeddings, processes each independently
-  - `GET /api/cron/dedup` — placeholder cron (wired up, `CRON_SECRET` auth, awaits step 12 dedup logic)
+  - `GET /api/cron/dedup` — wired up with `dedupForUser()`, `CRON_SECRET` auth
   - Clerk middleware (`proxy.ts`) updated to allow `/api/cron(.*)` as public routes (cron uses `CRON_SECRET`, not Clerk sessions)
+- [x] **Step 12:** Dedup job (`lib/dedup.ts`)
+  - Two-pass dedup: Pass 1 exact email match (fast, ~80% of dupes), Pass 2 vector cosine similarity (catches name/email variations)
+  - Incremental: only processes contacts where `last_dedup_checked_at IS NULL` — O(new) not O(total)
+  - Chunked: `BATCH_SIZE = 2000`, checkpoints progress in `dedup_jobs.contacts_processed`
+  - `ivfflat.probes = 10` for dedup (higher recall) vs `probes = 1` for NL search (faster)
+  - Similarity threshold 0.92, top-5 nearest neighbors per contact
+  - `dedupForUser()` helper finds/creates dedup jobs automatically
+  - On-demand trigger: `POST /api/dedup` (Clerk auth)
+  - Dashboard "Run dedup" button (`components/dedup-button.tsx`) for manual testing
+- [x] **Step 13:** Dedup evals
+  - `scripts/seed-test-data.ts` — seeds 10 known duplicate pairs + 5 true negatives
+  - Dedup eval in `__tests__/evals.test.ts` — precision >= 0.8 and recall >= 0.8
+  - Gracefully skips if test data not seeded or embeddings not generated
 
 ---
 
@@ -91,9 +104,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ## Up Next (following build order)
 
-12. **Dedup job** (`lib/dedup.ts` — incremental + chunked) ← next
-13. **Hallucination + dedup evals** (complete eval suite, `npm test`)
-14. **README + deploy to Vercel**
+14. **README + deploy to Vercel** ← next
 
 ## Future Features
 

@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–7 complete + segment card enhancements, step 8 next
+## Status: Building — steps 1–8 complete, step 9 next
 
 ---
 
@@ -46,6 +46,13 @@ Current progress against the build order defined in CLAUDE.md.
   - Refresh count button (live badge update, invalidates contact cache)
   - AI-powered refine bar: plain-English narrowing within a saved segment, "X of Y contacts" count, ✕ to restore
   - Save refined view as new segment (`base_segment_id` ANDs filters server-side)
+- [x] **Step 8:** Outreach drafter (`/outreach` page + `POST /api/outreach`)
+  - Segment picker + outreach type chips (event invite, newsletter, speaker ask, sponsor ask, general)
+  - Context textarea with type-aware placeholder
+  - Word-by-word streaming via `@anthropic-ai/sdk` messages.stream → plain ReadableStream
+  - Only name/role/company sent to AI — email/phone/linkedin never leave the DB
+  - Regenerate and Copy on completion; errors surface inline in red box
+  - Note: `@ai-sdk/anthropic` v3 has wrong base URL bug; route uses `@anthropic-ai/sdk` directly
 
 ---
 
@@ -57,8 +64,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ## Up Next (following build order)
 
-8. **Outreach drafter** (`/outreach` page with streaming) — demo moment #3 ← next
-9. **Dashboard** (SSR + Suspense streaming stats)
+9. **Dashboard** (SSR + Suspense streaming stats) ← next
 10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`)
 11. **`vercel.json` + cron routes** (`/api/cron/embed`, `/api/cron/dedup`)
 12. **Dedup job** (`lib/dedup.ts` — incremental + chunked)

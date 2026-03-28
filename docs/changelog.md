@@ -7,6 +7,15 @@ All notable changes to the Luma CRM project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Outreach drafter** (`/outreach` page + `POST /api/outreach`) — pick a saved segment, choose outreach type (event invite / newsletter / speaker ask / sponsor ask / general), describe your goal, and get a streaming AI draft word-by-word; Regenerate and Copy buttons appear on completion
+- `POST /api/outreach` — fetches segment metadata + runs filter to sample up to 10 contacts (name/role/company only — email/phone/linkedin never sent to AI); streams response via `@anthropic-ai/sdk` messages.stream → plain-text ReadableStream; errors encoded inline so the client always sees feedback
+- Outreach link added to sidebar nav
+- `@ai-sdk/react` installed (available for future use; outreach route uses `@anthropic-ai/sdk` directly due to `@ai-sdk/anthropic` v3 hitting wrong API base URL)
+
+### Fixed
+- `@ai-sdk/anthropic` v3 hits `https://api.anthropic.com/messages` (missing `/v1/` prefix) returning 404 — outreach route bypasses this by using `@anthropic-ai/sdk` directly with a manual ReadableStream
+
+### Added
 - **Segment card contact drill-through** — "View contacts" expands lazily-loaded list inside each saved segment card; shows name, role, email, phone, and LinkedIn with per-field copy buttons (name, email, LinkedIn URL each have independent 2s flash copy)
 - `GET /api/segments/[id]/contacts` — returns up to 2,000 matching contacts with phone extracted from `raw_fields` JSONB (tries `phone`, `Phone`, `Phone Number`, `phone_number`, `Mobile`, `mobile`)
 - `POST /api/segments/[id]/contacts` — AI-powered in-place refinement: takes a plain-English description, generates a WHERE clause via `generateWhereClause`, ANDs it with the segment's stored `filter_sql`, returns the narrowed contact list; used by the refine bar in the segment card

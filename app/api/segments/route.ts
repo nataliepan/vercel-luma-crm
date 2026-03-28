@@ -79,10 +79,16 @@ export async function GET() {
 }
 
 // POST /api/segments — create a segment from a plain-English description
-// Body: { description: string, preview?: boolean }
+// Body: { description: string, preview?: boolean, base_segment_id?: string }
 //
-// preview: true  → return { label, description, filter_sql, contact_count } without saving
-// preview: false → save to DB, return the full segment row
+// preview: true          → return { label, description, filter_sql, contact_count } without saving
+// preview: false         → save to DB, return the full segment row
+// base_segment_id        → when provided, Claude only generates the *extra* filter constraint;
+//                          the server ANDs it with the base segment's stored filter_sql.
+//                          Why compose server-side not in the prompt: Claude can't reliably
+//                          reproduce the original SQL from a description, and we don't want to
+//                          send raw SQL into the prompt. ANDing two validated fragments server-side
+//                          is deterministic and safe.
 //
 // Why preview mode: the segment builder shows a live contact count as the user types.
 // We call with preview:true on every debounced keystroke so the user sees the impact
@@ -95,13 +101,39 @@ export async function POST(req: Request) {
     const body = await req.json()
     const description: string = body.description?.trim() ?? ''
     const preview: boolean = body.preview !== false // default true if not specified
+    const baseSegmentId: string | null = body.base_segment_id ?? null
 
     if (!description) {
       return NextResponse.json({ error: 'description is required' }, { status: 400 })
     }
 
-    // Step 1: Ask Claude to generate label + description + filter_sql
-    const segment = await generateSegment(description)
+    // If refining an existing segment, fetch its filter_sql to AND with the new constraint.
+    // Verify ownership (user_id) so a user can't base a refinement on another user's segment.
+    let baseFilterSql: string | null = null
+    let baseLabel: string | null = null
+    if (baseSegmentId) {
+      const baseResult = await db.query(
+        `SELECT filter_sql, label FROM segments WHERE id = $1 AND user_id = $2`,
+        [baseSegmentId, userId]
+      )
+      if (baseResult.rows.length === 0) {
+        return NextResponse.json({ error: 'Base segment not found' }, { status: 404 })
+      }
+      try {
+        baseFilterSql = validateSQL(baseResult.rows[0].filter_sql)
+        baseLabel = baseResult.rows[0].label
+      } catch {
+        return NextResponse.json({ error: 'Base segment filter is invalid' }, { status: 422 })
+      }
+    }
+
+    // Step 1: Ask Claude to generate label + description + filter_sql.
+    // When refining, pass the base segment label as context so Claude names the
+    // refined segment meaningfully (e.g. "SF VCs" not just "VCs").
+    const promptDescription = baseLabel
+      ? `Refine the "${baseLabel}" segment: ${description}`
+      : description
+    const segment = await generateSegment(promptDescription)
     if (!segment) {
       return NextResponse.json(
         { error: 'Could not generate a segment from that description. Try rephrasing.' },
@@ -115,7 +147,13 @@ export async function POST(req: Request) {
     // semicolons, and comment sequences — covering all known injection vectors.
     let safeFilterSql: string
     try {
-      safeFilterSql = validateSQL(segment.filter_sql)
+      const newFilter = validateSQL(segment.filter_sql)
+      // Combine base + new constraint: both fragments already validated individually.
+      // Why wrap each in parens: prevents operator precedence bugs when either fragment
+      // contains OR — e.g. `a OR b AND c OR d` is not the same as `(a OR b) AND (c OR d)`.
+      safeFilterSql = baseFilterSql
+        ? `(${baseFilterSql}) AND (${newFilter})`
+        : newFilter
     } catch (validationErr) {
       console.error('Segment filter_sql failed validation:', validationErr, segment.filter_sql)
       return NextResponse.json(

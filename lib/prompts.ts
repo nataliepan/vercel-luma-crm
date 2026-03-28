@@ -126,11 +126,32 @@ filter_sql rules:
 
 Segments are for newsletters, event invites, and speaker outreach.
 
+IMPORTANT — combining multiple contact_events conditions:
+When a query requires two conditions on the same contact_events row (e.g. "used a coupon AND paid something"),
+put BOTH conditions inside ONE EXISTS subquery. Do NOT use two separate EXISTS blocks.
+Two separate EXISTS would match contacts who used a coupon at one event and paid at a different event —
+wrong intent. A single EXISTS ensures both conditions apply to the same registration row.
+
+GOOD (single row must satisfy both):
+EXISTS (
+  SELECT 1 FROM contact_events ce
+  WHERE ce.contact_id = contacts.id
+    AND ce.coupon_code IS NOT NULL
+    AND ce.amount IS NOT NULL AND ce.amount != '$0.00'
+)
+
+BAD (matches across different events):
+EXISTS (SELECT 1 FROM contact_events ce WHERE ce.contact_id = contacts.id AND ce.coupon_code IS NOT NULL)
+AND EXISTS (SELECT 1 FROM contact_events ce WHERE ce.contact_id = contacts.id AND ce.amount IS NOT NULL AND ce.amount != '$0.00')
+
 Example input: "Founders who attended 3+ events"
 Example output: {"label": "Active Founders", "description": "Founders who attended three or more events.", "filter_sql": "role ILIKE '%founder%' AND (SELECT COUNT(DISTINCT ce.event_id) FROM contact_events ce WHERE ce.contact_id = contacts.id) >= 3"}
 
 Example input: "VCs in San Francisco"
 Example output: {"label": "SF VCs", "description": "Investors based in San Francisco.", "filter_sql": "role ILIKE '%VC%' OR role ILIKE '%venture%' OR role ILIKE '%investor%'"}
+
+Example input: "contacts who used a coupon and still paid something"
+Example output: {"label": "Paid Coupon Users", "description": "Contacts who used a coupon code on a registration where they also paid a non-zero amount.", "filter_sql": "EXISTS (SELECT 1 FROM contact_events ce WHERE ce.contact_id = contacts.id AND ce.coupon_code IS NOT NULL AND ce.amount IS NOT NULL AND ce.amount != '$0.00')"}
 `
 
 export const OUTREACH_SYSTEM_PROMPT = `

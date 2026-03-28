@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–7 complete, step 8 next
+## Status: Building — steps 1–7 complete + segment card enhancements, step 8 next
 
 ---
 
@@ -39,6 +39,13 @@ Current progress against the build order defined in CLAUDE.md.
   - Saved segments list with collapsible SQL view and delete
   - Ticket/payment fields (`amount`, `coupon_code`, etc.) promoted to proper columns + migration script
   - `custom_responses` now correctly populated from all unmapped CSV fields (normalized snake_case keys)
+- [x] **Segment card enhancements** (post step 7 quality-of-life)
+  - Contact drill-through: lazy-loaded list with name/role/email/phone/LinkedIn + per-field copy buttons
+  - Export CSV (client-side, includes phone + LinkedIn, respects active refinement)
+  - Copy emails with separator picker (comma / newline / custom, injection-safe)
+  - Refresh count button (live badge update, invalidates contact cache)
+  - AI-powered refine bar: plain-English narrowing within a saved segment, "X of Y contacts" count, ✕ to restore
+  - Save refined view as new segment (`base_segment_id` ANDs filters server-side)
 
 ---
 
@@ -61,7 +68,7 @@ Current progress against the build order defined in CLAUDE.md.
 ## Future Features
 
 15. **Imports history** (ability to download original file)
-16. **Segment segment** (ability to drill down more)
+16. **Edit segment** — rename label/description inline on the saved segment card (small QoL fix)
 
 ---
 

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { db } from '@/lib/db'
-import { validateSQL } from '@/lib/nl-search'
+import { validateSQL, generateWhereClause } from '@/lib/nl-search'
 
 // GET /api/segments/[id]/contacts
 // Returns all contacts matching the segment's filter_sql.
@@ -76,4 +76,123 @@ export async function GET(
     total: result.rows.length,
     capped: result.rows.length === SEGMENT_CONTACT_LIMIT,
   })
+}
+
+// POST /api/segments/[id]/contacts
+// Body: { description: string }
+//
+// Refines the segment contact list in-place: generates a new WHERE clause from
+// the plain-English description, ANDs it with the segment's stored filter_sql,
+// and returns the matching contacts — same shape as GET so the client can swap
+// them in directly.
+//
+// Why a POST on the contacts sub-route rather than re-using /api/segments preview:
+// the preview endpoint returns only 3 sample contacts. Here the caller needs the
+// full list (for copy-emails and export). A dedicated endpoint keeps the response
+// contract identical to GET so the card component has no branching logic.
+//
+// Why not save this as a new segment automatically: the user is just browsing a
+// narrowed view. If they want to persist it they can use the segment builder.
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { userId } = await auth()
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const { id } = await params
+    const body = await req.json()
+    const description: string = body.description?.trim() ?? ''
+
+    if (!description) {
+      return NextResponse.json({ error: 'description is required' }, { status: 400 })
+    }
+
+    // Fetch and validate the base segment's stored filter — also confirms ownership.
+    const segmentResult = await db.query(
+      `SELECT filter_sql, label FROM segments WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    )
+    if (segmentResult.rows.length === 0) {
+      return NextResponse.json({ error: 'Segment not found' }, { status: 404 })
+    }
+
+    const { filter_sql, label } = segmentResult.rows[0]
+
+    let baseSQL: string
+    try {
+      baseSQL = validateSQL(filter_sql)
+    } catch {
+      return NextResponse.json({ error: 'Segment filter is invalid' }, { status: 422 })
+    }
+
+    // Ask Claude to generate a WHERE fragment for the refinement description.
+    // Why generateWhereClause not a raw prompt: it uses the full NL_SEARCH_PROMPT
+    // schema context (contact_events, coupon_code, amount, custom_responses, etc.)
+    // so "used coupon" correctly maps to coupon_code IS NOT NULL.
+    let extraFilter: string
+    try {
+      extraFilter = await generateWhereClause(description)
+    } catch {
+      return NextResponse.json(
+        { error: 'Could not generate a filter from that description. Try rephrasing.' },
+        { status: 422 }
+      )
+    }
+
+    let extraSQL: string
+    try {
+      extraSQL = validateSQL(extraFilter)
+    } catch {
+      return NextResponse.json(
+        { error: 'Generated SQL was unsafe. Try a different description.' },
+        { status: 422 }
+      )
+    }
+
+    // Combine base + refinement. Wrap each in parens to prevent OR precedence bugs.
+    const combinedSQL = `(${baseSQL}) AND (${extraSQL})`
+
+    let result
+    try {
+      result = await db.query(
+        `SELECT id, name, email, given_email, company, role, linkedin_url, created_at,
+                COALESCE(
+                  raw_fields->>'phone',
+                  raw_fields->>'Phone',
+                  raw_fields->>'Phone Number',
+                  raw_fields->>'phone_number',
+                  raw_fields->>'Mobile',
+                  raw_fields->>'mobile'
+                ) AS phone
+         FROM contacts
+         WHERE user_id = $1
+           AND merged_into_id IS NULL
+           AND (${combinedSQL})
+         ORDER BY name NULLS LAST, email
+         LIMIT $2`,
+        [userId, SEGMENT_CONTACT_LIMIT]
+      )
+    } catch (queryErr) {
+      console.error('Segment refine query failed:', queryErr)
+      return NextResponse.json(
+        { error: 'Generated query had a SQL error. Try rephrasing.' },
+        { status: 422 }
+      )
+    }
+
+    return NextResponse.json({
+      contacts: result.rows,
+      label,
+      total: result.rows.length,
+      capped: result.rows.length === SEGMENT_CONTACT_LIMIT,
+    })
+  } catch (err) {
+    console.error('POST /api/segments/[id]/contacts failed:', err)
+    return NextResponse.json(
+      { error: (err as Error).message ?? 'Failed to refine contacts' },
+      { status: 500 }
+    )
+  }
 }

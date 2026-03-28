@@ -107,21 +107,36 @@ function downloadCSV(contacts: SegmentContact[], label: string) {
   URL.revokeObjectURL(url)
 }
 
-// SegmentCard renders a single saved segment with contact list, export, and copy.
+// SegmentCard renders a single saved segment with contact list, export, copy, and refine.
 // Why separate component: each card has its own async state (contacts loaded lazily,
-// copy confirmation timer, refresh in-flight). Keeping this state local avoids
-// polluting the parent with per-card transient state.
+// copy confirmation timer, refresh in-flight, refine in-flight). Keeping this state local
+// avoids polluting the parent with per-card transient state.
 function SegmentCard({
   segment,
   onDelete,
   onCountUpdated,
+  onSegmentAdded,
 }: {
   segment: Segment
   onDelete: (id: string) => void
   onCountUpdated: (id: string, newCount: number) => void
+  onSegmentAdded: (s: Segment) => void
 }) {
   const [sqlOpen, setSqlOpen] = useState(false)
   const [contactsOpen, setContactsOpen] = useState(false)
+  // Refinement input — triggers an AI-powered re-query ANDed with the base segment filter.
+  // Why AI not client-side text: refinements like "used coupon" or "from SF" map to
+  // contact_events columns (coupon_code, custom_responses) that aren't in the loaded
+  // contact rows. Only the server can evaluate those conditions.
+  // originalContacts holds the base segment's full list and is never overwritten —
+  // clearing the refine input always restores it without a re-fetch.
+  const [refineText, setRefineText] = useState('')
+  const [refinedContacts, setRefinedContacts] = useState<SegmentContact[] | null>(null)
+  const [refineLoading, setRefineLoading] = useState(false)
+  const [refineError, setRefineError] = useState<string | null>(null)
+  const [refineSaving, setRefineSaving] = useState(false)
+  const [refineSaveError, setRefineSaveError] = useState<string | null>(null)
+  const refineDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [contacts, setContacts] = useState<SegmentContact[] | null>(null)
   const [contactsLoading, setContactsLoading] = useState(false)
   const [contactsCapped, setContactsCapped] = useState(false)
@@ -179,8 +194,11 @@ function SegmentCard({
         const data = await res.json()
         setCount(data.contact_count)
         onCountUpdated(segment.id, data.contact_count)
-        // Invalidate cached contacts so the list reloads on next expand
+        // Invalidate cached contacts so the list reloads on next expand.
+        // Also clear any active refinement — it was derived from the old contact set.
         setContacts(null)
+        setRefinedContacts(null)
+        setRefineText('')
       }
     } finally {
       setRefreshing(false)
@@ -194,12 +212,93 @@ function SegmentCard({
     onDelete(segment.id)
   }
 
+  // Fetch a refined contact list from the server.
+  // Called on every debounced keystroke in the refine input.
+  async function fetchRefined(desc: string) {
+    if (!desc.trim()) {
+      setRefinedContacts(null)
+      setRefineError(null)
+      return
+    }
+    setRefineLoading(true)
+    setRefineError(null)
+    try {
+      const res = await fetch(`/api/segments/${segment.id}/contacts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: desc }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setRefineError(data.error ?? 'Could not refine contacts')
+        setRefinedContacts(null)
+      } else {
+        setRefinedContacts(data.contacts)
+      }
+    } catch {
+      setRefineError('Network error')
+      setRefinedContacts(null)
+    } finally {
+      setRefineLoading(false)
+    }
+  }
+
+  function handleRefineChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value
+    setRefineText(val)
+    if (refineDebounceRef.current) clearTimeout(refineDebounceRef.current)
+    if (!val.trim()) {
+      // Clear immediately — no need to wait for debounce when emptying
+      setRefinedContacts(null)
+      setRefineError(null)
+      return
+    }
+    // Why 800ms not 600ms: this calls Claude + a DB query, slightly more latency
+    // than the segment builder preview. Longer debounce reduces wasted AI calls.
+    refineDebounceRef.current = setTimeout(() => fetchRefined(val), 800)
+  }
+
+  async function handleRefineSave() {
+    if (!refineText.trim()) return
+    setRefineSaving(true)
+    setRefineSaveError(null)
+    try {
+      const res = await fetch('/api/segments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          description: refineText,
+          preview: false,
+          base_segment_id: segment.id,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setRefineSaveError(data.error ?? 'Failed to save')
+      } else {
+        onSegmentAdded(data.segment)
+        // Clear refinement — the saved segment now lives in the list
+        setRefineText('')
+        setRefinedContacts(null)
+        setRefineError(null)
+      }
+    } catch {
+      setRefineSaveError('Network error')
+    } finally {
+      setRefineSaving(false)
+    }
+  }
+
+  // The contacts to display: refined list when active, base list otherwise.
+  const displayContacts = refinedContacts ?? contacts
+
   function handleCopyEmails() {
-    if (!contacts) return
+    if (!displayContacts) return
     // Use given_email (preferred outreach address) when available, fall back to account email.
     // Why prefer given_email: it's the address the contact typed in the registration form —
     // often their preferred contact address vs. their Luma account email.
-    const emails = contacts.map(c => c.given_email || c.email)
+    // Operates on displayContacts so copy respects any active refinement.
+    const emails = displayContacts.map(c => c.given_email || c.email)
     const separator = emailSep === 'comma' ? ', ' : emailSep === 'line' ? '\n' : sanitizeSeparator(customSep)
     const text = emails.join(separator)
     navigator.clipboard.writeText(text)
@@ -275,6 +374,7 @@ function SegmentCard({
             {segment.filter_sql}
           </pre>
         )}
+
       </div>
 
       {/* Contacts panel — lazy loaded on first expand */}
@@ -286,9 +386,9 @@ function SegmentCard({
             <>
               {/* Export / copy toolbar */}
               <div className="px-4 py-2.5 border-b bg-gray-50 flex items-center gap-3 flex-wrap">
-                {/* Export CSV — standalone action, visually separated by gap+divider */}
+                {/* Export CSV — operates on displayContacts so download reflects any active refinement */}
                 <button
-                  onClick={() => downloadCSV(contacts, segment.label)}
+                  onClick={() => downloadCSV(displayContacts ?? [], segment.label)}
                   className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 bg-white rounded px-2.5 py-1 transition-colors"
                 >
                   <Download className="w-3 h-3" />
@@ -342,50 +442,112 @@ function SegmentCard({
                   </div>
                 </div>
 
+                {/* Contact count — shows refined vs base total when a refinement is active */}
                 <span className="text-xs text-gray-400 ml-auto">
-                  {contactsCapped ? `2,000+ contacts (capped)` : `${contacts.length.toLocaleString()} contacts`}
+                  {refinedContacts !== null
+                    ? `${refinedContacts.length.toLocaleString()} of ${contacts.length.toLocaleString()} contacts`
+                    : contactsCapped
+                      ? `2,000+ contacts (capped)`
+                      : `${contacts.length.toLocaleString()} contacts`}
                 </span>
               </div>
 
-              {/* Contact list */}
-              <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
-                {contacts.map(c => (
-                  <div key={c.id} className="px-4 py-2 flex items-center gap-3 text-sm hover:bg-gray-50">
-                    {/* Name + role */}
-                    <div className="w-44 min-w-0 shrink-0">
-                      <div className="flex items-center gap-1">
-                        <span className="font-medium text-gray-900 truncate">{c.name ?? <span className="text-gray-400 font-normal">—</span>}</span>
-                        {c.name && <CopyButton text={c.name} label="name" />}
-                      </div>
-                      {c.role && <div className="text-gray-400 text-xs truncate">{c.role}</div>}
-                    </div>
-                    {/* Email */}
-                    <div className="flex items-center gap-1 flex-1 min-w-0">
-                      <span className="text-gray-500 text-xs truncate">{c.given_email || c.email}</span>
-                      <CopyButton text={c.given_email || c.email} label="email" />
-                    </div>
-                    {/* Phone — shown only when present */}
-                    {c.phone && (
-                      <span className="text-gray-400 text-xs shrink-0">{c.phone}</span>
+              {/* Refine bar — AI-powered sub-filter within this segment.
+                  Typing here ANDs a new plain-English condition with the segment's stored
+                  filter_sql server-side and returns the matching subset.
+                  Why AI not client-side text: refinements like "used coupon" or "from SF"
+                  map to contact_events columns not present in the loaded rows.
+                  Clearing the input restores the original segment contacts without re-fetching. */}
+              <div className="px-4 py-2.5 border-b bg-white space-y-1.5">
+                <p className="text-xs text-gray-400 leading-snug">
+                  <span className="font-medium text-gray-500">Segment:</span> {segment.description}
+                </p>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={refineText}
+                      onChange={handleRefineChange}
+                      placeholder="Narrow further — e.g. used coupon, from SF…"
+                      className="w-full border rounded px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-black placeholder-gray-300 pr-14"
+                    />
+                    {refineLoading && (
+                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center gap-1 text-xs text-gray-400">
+                        <Sparkles className="w-3 h-3 animate-pulse" />
+                      </span>
                     )}
-                    {/* LinkedIn — open link + copy URL side by side */}
-                    {c.linkedin_url && (
-                      <div className="flex items-center gap-1 shrink-0">
-                        <a
-                          href={c.linkedin_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-blue-500 hover:text-blue-700 truncate max-w-24"
-                          title={c.linkedin_url}
-                        >
-                          LinkedIn ↗
-                        </a>
-                        <CopyButton text={c.linkedin_url} label="LinkedIn URL" />
-                      </div>
+                    {!refineLoading && refineText && (
+                      <button
+                        onClick={() => { setRefineText(''); setRefinedContacts(null); setRefineError(null) }}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-300 hover:text-gray-600 text-xs"
+                        title="Clear refinement"
+                      >
+                        ✕
+                      </button>
                     )}
                   </div>
-                ))}
+                  {refinedContacts !== null && !refineLoading && (
+                    <Button
+                      size="sm"
+                      onClick={handleRefineSave}
+                      disabled={refineSaving}
+                      className="text-xs shrink-0"
+                    >
+                      {refineSaving ? 'Saving…' : 'Save as new segment'}
+                    </Button>
+                  )}
+                </div>
+                {refineError && <p className="text-xs text-red-500">{refineError}</p>}
+                {refineSaveError && <p className="text-xs text-red-500">{refineSaveError}</p>}
               </div>
+
+              {/* Contact list — shows refined subset when refineText is active, full list otherwise */}
+              {displayContacts && displayContacts.length > 0 ? (
+                <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
+                  {displayContacts.map(c => (
+                    <div key={c.id} className="px-4 py-2 flex items-center gap-3 text-sm hover:bg-gray-50">
+                      {/* Name + role */}
+                      <div className="w-44 min-w-0 shrink-0">
+                        <div className="flex items-center gap-1">
+                          <span className="font-medium text-gray-900 truncate">{c.name ?? <span className="text-gray-400 font-normal">—</span>}</span>
+                          {c.name && <CopyButton text={c.name} label="name" />}
+                        </div>
+                        {c.role && <div className="text-gray-400 text-xs truncate">{c.role}</div>}
+                      </div>
+                      {/* Email */}
+                      <div className="flex items-center gap-1 flex-1 min-w-0">
+                        <span className="text-gray-500 text-xs truncate">{c.given_email || c.email}</span>
+                        <CopyButton text={c.given_email || c.email} label="email" />
+                      </div>
+                      {/* Phone — shown only when present */}
+                      {c.phone && (
+                        <span className="text-gray-400 text-xs shrink-0">{c.phone}</span>
+                      )}
+                      {/* LinkedIn — open link + copy URL side by side */}
+                      {c.linkedin_url && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          <a
+                            href={c.linkedin_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-500 hover:text-blue-700 truncate max-w-24"
+                            title={c.linkedin_url}
+                          >
+                            LinkedIn ↗
+                          </a>
+                          <CopyButton text={c.linkedin_url} label="LinkedIn URL" />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="px-4 py-3 text-xs text-gray-400">
+                  {refineText.trim() && !refineLoading
+                    ? 'No contacts match that refinement.'
+                    : 'No contacts match this segment.'}
+                </div>
+              )}
             </>
           ) : (
             <div className="px-4 py-3 text-xs text-gray-400">No contacts match this segment.</div>
@@ -533,6 +695,10 @@ export default function SegmentsPage() {
     setSegments(prev => prev.map(s => s.id === id ? { ...s, contact_count: newCount } : s))
   }
 
+  function handleSegmentAdded(s: Segment) {
+    setSegments(prev => [s, ...prev])
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Page header */}
@@ -654,6 +820,7 @@ export default function SegmentsPage() {
                     segment={segment}
                     onDelete={handleDelete}
                     onCountUpdated={handleCountUpdated}
+                    onSegmentAdded={handleSegmentAdded}
                   />
                 ))}
               </div>

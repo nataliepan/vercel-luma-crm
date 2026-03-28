@@ -1,0 +1,17 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/embed",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/dedup",
+      "schedule": "0 3 * * *"
+    }
+  ],
+  "functions": {
+    "app/api/import/route.ts": { "maxDuration": 120 },
+    "app/api/embed/route.ts": { "maxDuration": 300 },
+    "app/api/cron/**": { "maxDuration": 300 }
+  }
+}

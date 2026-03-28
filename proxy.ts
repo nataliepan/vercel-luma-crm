@@ -9,6 +9,9 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 const isPublicRoute = createRouteMatcher([
   '/sign-in(.*)',
   '/sign-up(.*)',
+  '/api/cron(.*)',
+  // Why public: Vercel cron triggers these via HTTP GET with no user session.
+  // Auth is handled inside each cron route by verifying CRON_SECRET instead.
 ])
 
 export default clerkMiddleware(async (auth, req) => {

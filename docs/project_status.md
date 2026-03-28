@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–9 complete, step 10 next
+## Status: Building — steps 1–11 complete, step 12 next
 
 ---
 
@@ -66,6 +66,23 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
+- [x] **Step 10:** Embedding pipeline (`lib/embeddings.ts`)
+  - `embedContactsBatch()` — batches contacts in chunks of 2048 for OpenAI `text-embedding-3-small`
+  - `embedPendingContacts()` — queries all pending contacts for a user and delegates to batch function
+  - `unnest()` bulk update writes all embeddings from one batch in a single SQL query
+  - Per-chunk error isolation: failed chunks marked `embedding_status = 'failed'` without aborting batch
+  - Uses `dbDirect` (unpooled) for long-running background jobs
+  - Embeds `name + role + company + notes` — deliberately omits email (not semantically useful)
+  - On-demand trigger: `POST /api/embed` (Clerk auth)
+  - Dashboard "Embed contacts" button (`components/embed-button.tsx`) for manual testing
+- [x] **Step 11:** `vercel.json` + cron routes
+  - `vercel.json` — cron schedules (embed 2am UTC, dedup 3am UTC) + function `maxDuration` configs
+  - `GET /api/cron/embed` — nightly cron: queries all users with pending embeddings, processes each independently
+  - `GET /api/cron/dedup` — placeholder cron (wired up, `CRON_SECRET` auth, awaits step 12 dedup logic)
+  - Clerk middleware (`proxy.ts`) updated to allow `/api/cron(.*)` as public routes (cron uses `CRON_SECRET`, not Clerk sessions)
+
+---
+
 ## In Progress
 
 - Nothing currently blocked
@@ -74,9 +91,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ## Up Next (following build order)
 
-10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`) ← next
-11. **`vercel.json` + cron routes** (`/api/cron/embed`, `/api/cron/dedup`)
-12. **Dedup job** (`lib/dedup.ts` — incremental + chunked)
+12. **Dedup job** (`lib/dedup.ts` — incremental + chunked) ← next
 13. **Hallucination + dedup evals** (complete eval suite, `npm test`)
 14. **README + deploy to Vercel**
 

@@ -11,6 +11,7 @@ import {
   Upload,
   ArrowRight,
 } from 'lucide-react'
+import { EmbedButton } from '@/components/embed-button'
 
 // Why SSR + Suspense: stats come from separate DB queries (contact count,
 // event count, segment count, dedup candidates). Suspense lets each stream
@@ -470,7 +471,10 @@ export default async function DashboardPage() {
                 <RecentContacts userId={userId} />
               </Suspense>
             </div>
-            <QuickActions />
+            <div className="space-y-4">
+              <QuickActions />
+              <EmbedButton />
+            </div>
           </div>
         </div>
       </div>

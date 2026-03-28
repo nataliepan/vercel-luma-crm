@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–8 complete, step 9 next
+## Status: Building — steps 1–9 complete, step 10 next
 
 ---
 
@@ -53,6 +53,14 @@ Current progress against the build order defined in CLAUDE.md.
   - Only name/role/company sent to AI — email/phone/linkedin never leave the DB
   - Regenerate and Copy on completion; errors surface inline in red box
   - Note: `@ai-sdk/anthropic` v3 has wrong base URL bug; route uses `@anthropic-ai/sdk` directly
+- [x] **Step 9:** Dashboard + production-grade error handling & AI safety
+  - SSR dashboard with React Suspense streaming 4 stat cards + recent contacts + quick actions
+  - Each async RSC wrapped in try/catch with graceful `StatErrorCard` fallback
+  - `error.tsx` for every route + `global-error.tsx` for root layout failures
+  - Rate limiting on all AI endpoints (`lib/rate-limit.ts` — outreach 20/min, segments 30/min)
+  - AI call audit logging (`lib/ai-log.ts` — fire-and-forget to DB with input/output/tokens/duration)
+  - Hallucination check endpoint (`POST /api/outreach/check`) — auto-runs after outreach stream, amber warning UI
+  - Hardened error handling: generic error messages, req.json() guards, safe parseInt, Blob path sanitization, useEffect cleanup
 
 ---
 
@@ -64,8 +72,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ## Up Next (following build order)
 
-9. **Dashboard** (SSR + Suspense streaming stats) ← next
-10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`)
+10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`) ← next
 11. **`vercel.json` + cron routes** (`/api/cron/embed`, `/api/cron/dedup`)
 12. **Dedup job** (`lib/dedup.ts` — incremental + chunked)
 13. **Hallucination + dedup evals** (complete eval suite, `npm test`)

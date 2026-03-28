@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–13 complete, step 14 next
+## Status: All 14 build steps complete
 
 ---
 
@@ -102,9 +102,9 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Up Next (following build order)
+## Completed (cont.)
 
-14. **README + deploy to Vercel** ← next
+- [x] **Step 14:** README rewritten with problem statement, architecture diagram, setup instructions, data privacy note, scale design rationale, known limitations
 
 ## Future Features
 

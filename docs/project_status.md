@@ -58,6 +58,11 @@ Current progress against the build order defined in CLAUDE.md.
 13. **Hallucination + dedup evals** (complete eval suite, `npm test`)
 14. **README + deploy to Vercel**
 
+## Future Features
+
+15. **Imports history** (ability to download original file)
+16. **Segment segment** (ability to drill down more)
+
 ---
 
 ## Blocked / Decisions Needed

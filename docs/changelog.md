@@ -7,6 +7,17 @@ All notable changes to the Luma CRM project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Segment card contact drill-through** — "View contacts" expands lazily-loaded list inside each saved segment card; shows name, role, email, phone, and LinkedIn with per-field copy buttons (name, email, LinkedIn URL each have independent 2s flash copy)
+- `GET /api/segments/[id]/contacts` — returns up to 2,000 matching contacts with phone extracted from `raw_fields` JSONB (tries `phone`, `Phone`, `Phone Number`, `phone_number`, `Mobile`, `mobile`)
+- `POST /api/segments/[id]/refresh` — reruns filter and updates cached `contact_count`; invalidates client-side contact cache so next expand fetches fresh data
+- **Export CSV** from segment — downloads `{label}-contacts.csv` with name, email, given_email, company, role, linkedin_url, phone; generated client-side from already-loaded data (no extra round-trip)
+- **Copy emails** with separator picker — `,` comma, `↵` newline, or free-form custom separator; separator input sanitized (strips control chars, formula-injection prefixes `=+-@|\``, max 10 chars); uses `given_email` over `email` when available
+- **Refresh count** button on each segment card — spinner icon, updates badge live, invalidates contact cache
+- `CopyButton` component — self-contained copy + 2s green checkmark flash, one per field so clicks don't affect other rows
+
+### Changed
+- Segment toolbar redesigned: `Export CSV` separated from `Copy emails + Separator` group by a vertical divider; "Separator" label added so the `,` `↵` custom controls are clearly associated with copy not export
+
 - **Segment builder** (`/segments` page + `GET|POST|DELETE /api/segments`) — plain-English audience segments with AI-generated WHERE clause, 600ms debounced live preview showing contact count + 3 sample matches, 10 example query chips to solve the cold-start blank-textarea problem, saved segment list with collapsible SQL view and delete
 - Ticket/payment fields promoted from `raw_row` to proper `contact_events` columns: `amount`, `amount_tax`, `amount_discount`, `currency`, `coupon_code`, `ticket_name`, `ticket_type_id` — enables segment queries like "contacts who used a coupon" or "people who paid for a ticket" without JSONB gymnastics
 - `scripts/migrate-ticket-fields.mts` — one-time migration to backfill ticket columns from existing `raw_row` data + partial index on `coupon_code`

@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
-import { Trash2, ChevronDown, ChevronRight, Users, Sparkles } from 'lucide-react'
+import { Trash2, ChevronDown, ChevronRight, Users, Sparkles, RefreshCw, Download, Copy, Check } from 'lucide-react'
 
 type Segment = {
   id: string
@@ -15,6 +15,17 @@ type Segment = {
   filter_sql: string
   contact_count: number
   created_at: string
+}
+
+type SegmentContact = {
+  id: string
+  name: string | null
+  email: string
+  given_email: string | null
+  company: string | null
+  role: string | null
+  linkedin_url: string | null
+  phone: string | null
 }
 
 type PreviewResult = {
@@ -41,18 +52,140 @@ function relativeTime(dateStr: string): string {
   return date.toLocaleDateString()
 }
 
-// SegmentCard renders a single saved segment.
-// Why separate component: keeps the parent clean and allows independent
-// expand/collapse state per card without lifting state into the page.
+// CopyButton: tiny self-contained copy button with a 2s "Copied" flash.
+// Why its own component not inline state: it appears once per contact row in a
+// list. Lifting copied state into SegmentCard would require a Map<contactId, bool>
+// and re-render the whole list on every copy. Local state keeps the flash isolated
+// to the button that was clicked.
+function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function handleCopy() {
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="flex items-center gap-0.5 text-xs text-gray-400 hover:text-gray-700 transition-colors shrink-0"
+      title={`Copy ${label}`}
+    >
+      {copied
+        ? <Check className="w-3 h-3 text-green-500" />
+        : <Copy className="w-3 h-3" />}
+    </button>
+  )
+}
+
+// Downloads a string as a file in the browser.
+// Why not a server route: we already have the data client-side from the contacts
+// fetch. Generating the CSV in the browser avoids a second round-trip and keeps
+// the download instant after the contacts are loaded.
+function downloadCSV(contacts: SegmentContact[], label: string) {
+  const headers = ['name', 'email', 'given_email', 'company', 'role', 'linkedin_url', 'phone']
+  const rows = contacts.map(c => [
+    c.name ?? '',
+    c.email,
+    c.given_email ?? '',
+    c.company ?? '',
+    c.role ?? '',
+    c.linkedin_url ?? '',
+    c.phone ?? '',
+  ].map(v => `"${v.replace(/"/g, '""')}"`).join(','))
+
+  const csv = [headers.join(','), ...rows].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${label.toLowerCase().replace(/\s+/g, '-')}-contacts.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// SegmentCard renders a single saved segment with contact list, export, and copy.
+// Why separate component: each card has its own async state (contacts loaded lazily,
+// copy confirmation timer, refresh in-flight). Keeping this state local avoids
+// polluting the parent with per-card transient state.
 function SegmentCard({
   segment,
   onDelete,
+  onCountUpdated,
 }: {
   segment: Segment
   onDelete: (id: string) => void
+  onCountUpdated: (id: string, newCount: number) => void
 }) {
   const [sqlOpen, setSqlOpen] = useState(false)
+  const [contactsOpen, setContactsOpen] = useState(false)
+  const [contacts, setContacts] = useState<SegmentContact[] | null>(null)
+  const [contactsLoading, setContactsLoading] = useState(false)
+  const [contactsCapped, setContactsCapped] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [count, setCount] = useState(segment.contact_count)
+  // emailSep: comma-separated vs one-per-line for copy
+  // Why toggle not fixed format: different tools expect different formats —
+  // Mailchimp wants comma-separated, Notion/Slack paste works better line-by-line.
+  const [emailSep, setEmailSep] = useState<'comma' | 'line' | 'custom'>('comma')
+  const [customSep, setCustomSep] = useState('')
+
+  // Sanitize a user-supplied separator before it touches clipboard output.
+  // Risks addressed:
+  // 1. CSV/spreadsheet formula injection — Excel/Sheets execute cells starting
+  //    with =, +, -, @ as formulas when pasted. Strip leading formula chars.
+  // 2. Control characters (\x00–\x1F except \t and space) — can cause silent
+  //    truncation or encoding issues in downstream tools (Mailchimp, Notion, etc.)
+  // 3. Length — no reason to allow more than 10 chars; caps accidental pastes.
+  function sanitizeSeparator(raw: string): string {
+    return raw
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // strip control chars (keep \t \n \r space)
+      .replace(/^[=+\-@|`]+/, '')                          // strip leading formula-injection chars
+      .slice(0, 10)                                         // max 10 chars
+  }
+  const [copied, setCopied] = useState(false)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Lazily fetch contacts when the panel is first expanded.
+  // Why lazy: most segment cards are viewed for their count/description without
+  // drilling in. Fetching all contacts on mount would waste bandwidth for every
+  // segment the user has saved.
+  async function handleToggleContacts() {
+    if (!contactsOpen && contacts === null) {
+      setContactsLoading(true)
+      try {
+        const res = await fetch(`/api/segments/${segment.id}/contacts`)
+        if (res.ok) {
+          const data = await res.json()
+          setContacts(data.contacts)
+          setContactsCapped(data.capped)
+        }
+      } finally {
+        setContactsLoading(false)
+      }
+    }
+    setContactsOpen(o => !o)
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true)
+    try {
+      const res = await fetch(`/api/segments/${segment.id}/refresh`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setCount(data.contact_count)
+        onCountUpdated(segment.id, data.contact_count)
+        // Invalidate cached contacts so the list reloads on next expand
+        setContacts(null)
+      }
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   async function handleDelete() {
     if (!confirm(`Delete segment "${segment.label}"?`)) return
@@ -61,51 +194,204 @@ function SegmentCard({
     onDelete(segment.id)
   }
 
+  function handleCopyEmails() {
+    if (!contacts) return
+    // Use given_email (preferred outreach address) when available, fall back to account email.
+    // Why prefer given_email: it's the address the contact typed in the registration form —
+    // often their preferred contact address vs. their Luma account email.
+    const emails = contacts.map(c => c.given_email || c.email)
+    const separator = emailSep === 'comma' ? ', ' : emailSep === 'line' ? '\n' : sanitizeSeparator(customSep)
+    const text = emails.join(separator)
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
-    <div className="border rounded-lg p-4 bg-white hover:border-gray-300 transition-colors">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium text-sm text-gray-900 truncate">{segment.label}</span>
-            {/* Contact count badge */}
-            <span className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded shrink-0">
-              <Users className="w-3 h-3" />
-              {segment.contact_count.toLocaleString()}
-            </span>
+    <div className="border rounded-lg bg-white hover:border-gray-300 transition-colors">
+      {/* Card header */}
+      <div className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <span className="font-medium text-sm text-gray-900 truncate">{segment.label}</span>
+              {/* Contact count badge — updates live after refresh */}
+              <span className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded shrink-0">
+                <Users className="w-3 h-3" />
+                {count.toLocaleString()}
+              </span>
+            </div>
+            <p className="text-sm text-gray-500 leading-snug">{segment.description}</p>
+            <p className="text-xs text-gray-400 mt-1.5">{relativeTime(segment.created_at)}</p>
           </div>
-          <p className="text-sm text-gray-500 leading-snug">{segment.description}</p>
-          <p className="text-xs text-gray-400 mt-1.5">{relativeTime(segment.created_at)}</p>
+
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Refresh count */}
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="p-1.5 text-gray-400 hover:text-gray-700 transition-colors disabled:opacity-50"
+              aria-label="Refresh contact count"
+              title="Refresh count"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+            {/* Delete */}
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="p-1.5 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-50"
+              aria-label={`Delete ${segment.label}`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
-        <button
-          onClick={handleDelete}
-          disabled={deleting}
-          className="p-1.5 text-gray-400 hover:text-red-500 transition-colors shrink-0 disabled:opacity-50"
-          aria-label={`Delete ${segment.label}`}
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
-      </div>
+        {/* Action row */}
+        <div className="mt-3 flex items-center gap-2 flex-wrap">
+          {/* View contacts toggle */}
+          <button
+            onClick={handleToggleContacts}
+            className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded px-2 py-1 transition-colors"
+          >
+            {contactsOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            {contactsLoading ? 'Loading…' : contactsOpen ? 'Hide contacts' : 'View contacts'}
+          </button>
 
-      {/* Collapsible SQL — transparent but not distracting */}
-      <div className="mt-3">
-        <button
-          onClick={() => setSqlOpen(o => !o)}
-          className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
-        >
-          {sqlOpen ? (
-            <ChevronDown className="w-3 h-3" />
-          ) : (
-            <ChevronRight className="w-3 h-3" />
-          )}
-          View SQL filter
-        </button>
+          {/* SQL toggle */}
+          <button
+            onClick={() => setSqlOpen(o => !o)}
+            className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded px-2 py-1 transition-colors"
+          >
+            {sqlOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            SQL
+          </button>
+        </div>
+
         {sqlOpen && (
           <pre className="mt-2 p-2.5 bg-gray-50 rounded text-xs text-gray-600 overflow-x-auto whitespace-pre-wrap break-all font-mono">
             {segment.filter_sql}
           </pre>
         )}
       </div>
+
+      {/* Contacts panel — lazy loaded on first expand */}
+      {contactsOpen && (
+        <div className="border-t">
+          {contactsLoading ? (
+            <div className="px-4 py-3 text-xs text-gray-400 animate-pulse">Loading contacts…</div>
+          ) : contacts && contacts.length > 0 ? (
+            <>
+              {/* Export / copy toolbar */}
+              <div className="px-4 py-2.5 border-b bg-gray-50 flex items-center gap-3 flex-wrap">
+                {/* Export CSV — standalone action, visually separated by gap+divider */}
+                <button
+                  onClick={() => downloadCSV(contacts, segment.label)}
+                  className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 bg-white rounded px-2.5 py-1 transition-colors"
+                >
+                  <Download className="w-3 h-3" />
+                  Export CSV
+                </button>
+
+                {/* Divider — visually separates export from the copy+separator group */}
+                <div className="w-px h-4 bg-gray-200 shrink-0" />
+
+                {/* Copy emails + Separator: grouped tightly so it's clear they belong together */}
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleCopyEmails}
+                    className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 bg-white rounded px-2.5 py-1 transition-colors"
+                  >
+                    {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                    {copied ? 'Copied!' : 'Copy emails'}
+                  </button>
+
+                  {/* Separator label + toggles — adjacent to copy button, no gap */}
+                  <div className="flex items-center gap-0 border border-gray-200 rounded overflow-hidden">
+                    <span className="text-xs text-gray-400 px-2 py-1 bg-gray-50 border-r border-gray-200 select-none">
+                      Separator
+                    </span>
+                    <button
+                      onClick={() => setEmailSep('comma')}
+                      className={`text-xs px-2.5 py-1 transition-colors ${emailSep === 'comma' ? 'bg-gray-100 text-gray-900 font-medium' : 'bg-white text-gray-400 hover:text-gray-700'}`}
+                      title="Comma-separated"
+                    >
+                      ,
+                    </button>
+                    <button
+                      onClick={() => setEmailSep('line')}
+                      className={`text-xs px-2.5 py-1 border-l border-gray-200 transition-colors ${emailSep === 'line' ? 'bg-gray-100 text-gray-900 font-medium' : 'bg-white text-gray-400 hover:text-gray-700'}`}
+                      title="One per line"
+                    >
+                      ↵
+                    </button>
+                    {/* Custom separator input */}
+                    <div className={`border-l border-gray-200 flex items-center transition-colors ${emailSep === 'custom' ? 'bg-gray-100' : 'bg-white'}`}>
+                      <input
+                        type="text"
+                        value={customSep}
+                        placeholder="custom"
+                        onFocus={() => setEmailSep('custom')}
+                        onChange={e => { setCustomSep(sanitizeSeparator(e.target.value)); setEmailSep('custom') }}
+                        className="w-14 text-xs px-2 py-1 bg-transparent outline-none text-gray-700 placeholder-gray-300"
+                        title="Custom separator"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <span className="text-xs text-gray-400 ml-auto">
+                  {contactsCapped ? `2,000+ contacts (capped)` : `${contacts.length.toLocaleString()} contacts`}
+                </span>
+              </div>
+
+              {/* Contact list */}
+              <div className="divide-y divide-gray-50 max-h-72 overflow-y-auto">
+                {contacts.map(c => (
+                  <div key={c.id} className="px-4 py-2 flex items-center gap-3 text-sm hover:bg-gray-50">
+                    {/* Name + role */}
+                    <div className="w-44 min-w-0 shrink-0">
+                      <div className="flex items-center gap-1">
+                        <span className="font-medium text-gray-900 truncate">{c.name ?? <span className="text-gray-400 font-normal">—</span>}</span>
+                        {c.name && <CopyButton text={c.name} label="name" />}
+                      </div>
+                      {c.role && <div className="text-gray-400 text-xs truncate">{c.role}</div>}
+                    </div>
+                    {/* Email */}
+                    <div className="flex items-center gap-1 flex-1 min-w-0">
+                      <span className="text-gray-500 text-xs truncate">{c.given_email || c.email}</span>
+                      <CopyButton text={c.given_email || c.email} label="email" />
+                    </div>
+                    {/* Phone — shown only when present */}
+                    {c.phone && (
+                      <span className="text-gray-400 text-xs shrink-0">{c.phone}</span>
+                    )}
+                    {/* LinkedIn — open link + copy URL side by side */}
+                    {c.linkedin_url && (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <a
+                          href={c.linkedin_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-500 hover:text-blue-700 truncate max-w-24"
+                          title={c.linkedin_url}
+                        >
+                          LinkedIn ↗
+                        </a>
+                        <CopyButton text={c.linkedin_url} label="LinkedIn URL" />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="px-4 py-3 text-xs text-gray-400">No contacts match this segment.</div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -243,6 +529,10 @@ export default function SegmentsPage() {
     setSegments(prev => prev.filter(s => s.id !== id))
   }
 
+  function handleCountUpdated(id: string, newCount: number) {
+    setSegments(prev => prev.map(s => s.id === id ? { ...s, contact_count: newCount } : s))
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Page header */}
@@ -363,6 +653,7 @@ export default function SegmentsPage() {
                     key={segment.id}
                     segment={segment}
                     onDelete={handleDelete}
+                    onCountUpdated={handleCountUpdated}
                   />
                 ))}
               </div>

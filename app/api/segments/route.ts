@@ -242,6 +242,52 @@ export async function POST(req: Request) {
   }
 }
 
+// PATCH /api/segments?id=<uuid> — rename label and/or description
+// Body: { label?: string, description?: string }
+// Why label/description only — not filter_sql: the SQL was AI-generated and
+// validated at creation. Allowing clients to overwrite it would bypass
+// validateSQL() and open an injection vector. Renames are cosmetic only.
+export async function PATCH(req: Request) {
+  try {
+    const { userId } = await auth()
+    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+    const { searchParams } = new URL(req.url)
+    const id = searchParams.get('id')
+    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
+
+    const body = await req.json()
+    const label: string | undefined = body.label?.trim()
+    const description: string | undefined = body.description?.trim()
+
+    if (!label && !description) {
+      return NextResponse.json({ error: 'label or description is required' }, { status: 400 })
+    }
+
+    const updated = await db.query(
+      `UPDATE segments
+       SET label       = COALESCE($3, label),
+           description = COALESCE($4, description),
+           updated_at  = now()
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, label, description, filter_sql, contact_count, created_at, updated_at`,
+      [id, userId, label ?? null, description ?? null]
+    )
+
+    if (updated.rows.length === 0) {
+      return NextResponse.json({ error: 'Segment not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ segment: updated.rows[0] })
+  } catch (err) {
+    console.error('PATCH /api/segments failed:', err)
+    return NextResponse.json(
+      { error: (err as Error).message ?? 'Failed to update segment' },
+      { status: 500 }
+    )
+  }
+}
+
 // DELETE /api/segments?id=<uuid> — delete a segment
 export async function DELETE(req: Request) {
   try {

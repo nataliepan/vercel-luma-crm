@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
-import { Trash2, ChevronDown, ChevronRight, Users, Sparkles, RefreshCw, Download, Copy, Check } from 'lucide-react'
+import { Trash2, ChevronDown, ChevronRight, Users, Sparkles, RefreshCw, Download, Copy, Check, Pencil, X } from 'lucide-react'
 
 type Segment = {
   id: string
@@ -116,14 +116,21 @@ function SegmentCard({
   onDelete,
   onCountUpdated,
   onSegmentAdded,
+  onEdited,
 }: {
   segment: Segment
   onDelete: (id: string) => void
   onCountUpdated: (id: string, newCount: number) => void
   onSegmentAdded: (s: Segment) => void
+  onEdited: (s: Segment) => void
 }) {
   const [sqlOpen, setSqlOpen] = useState(false)
   const [contactsOpen, setContactsOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editLabel, setEditLabel] = useState(segment.label)
+  const [editDescription, setEditDescription] = useState(segment.description)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState<string | null>(null)
   // Refinement input — triggers an AI-powered re-query ANDed with the base segment filter.
   // Why AI not client-side text: refinements like "used coupon" or "from SF" map to
   // contact_events columns (coupon_code, custom_responses) that aren't in the loaded
@@ -184,6 +191,37 @@ function SegmentCard({
       }
     }
     setContactsOpen(o => !o)
+  }
+
+  async function handleEditSave() {
+    if (!editLabel.trim()) return
+    setEditSaving(true)
+    setEditError(null)
+    try {
+      const res = await fetch(`/api/segments?id=${segment.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: editLabel, description: editDescription }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setEditError(data.error ?? 'Failed to save')
+      } else {
+        onEdited(data.segment)
+        setEditing(false)
+      }
+    } catch {
+      setEditError('Network error')
+    } finally {
+      setEditSaving(false)
+    }
+  }
+
+  function handleEditCancel() {
+    setEditLabel(segment.label)
+    setEditDescription(segment.description)
+    setEditError(null)
+    setEditing(false)
   }
 
   async function handleRefresh() {
@@ -313,19 +351,66 @@ function SegmentCard({
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className="font-medium text-sm text-gray-900 truncate">{segment.label}</span>
-              {/* Contact count badge — updates live after refresh */}
-              <span className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded shrink-0">
-                <Users className="w-3 h-3" />
-                {count.toLocaleString()}
-              </span>
-            </div>
-            <p className="text-sm text-gray-500 leading-snug">{segment.description}</p>
-            <p className="text-xs text-gray-400 mt-1.5">{relativeTime(segment.created_at)}</p>
+            {editing ? (
+              <div className="space-y-1.5">
+                <input
+                  autoFocus
+                  value={editLabel}
+                  onChange={e => setEditLabel(e.target.value)}
+                  className="w-full border rounded px-2 py-1 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-black"
+                  placeholder="Segment name"
+                />
+                <input
+                  value={editDescription}
+                  onChange={e => setEditDescription(e.target.value)}
+                  className="w-full border rounded px-2 py-1 text-xs text-gray-500 focus:outline-none focus:ring-1 focus:ring-black"
+                  placeholder="Description"
+                />
+                {editError && <p className="text-xs text-red-500">{editError}</p>}
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={handleEditSave} disabled={editSaving || !editLabel.trim()} className="text-xs">
+                    {editSaving ? 'Saving…' : 'Save'}
+                  </Button>
+                  <button onClick={handleEditCancel} className="text-xs text-gray-400 hover:text-gray-700">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="font-medium text-sm text-gray-900 truncate">{segment.label}</span>
+                  {/* Contact count badge — updates live after refresh */}
+                  <span className="inline-flex items-center gap-1 bg-gray-100 text-gray-600 text-xs px-1.5 py-0.5 rounded shrink-0">
+                    <Users className="w-3 h-3" />
+                    {count.toLocaleString()}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-500 leading-snug">{segment.description}</p>
+                <p className="text-xs text-gray-400 mt-1.5">{relativeTime(segment.created_at)}</p>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-1 shrink-0">
+            {/* Edit label/description */}
+            {!editing && (
+              <button
+                onClick={() => setEditing(true)}
+                className="p-1.5 text-gray-400 hover:text-gray-700 transition-colors"
+                aria-label="Edit segment name"
+                title="Edit name"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {editing && (
+              <button
+                onClick={handleEditCancel}
+                className="p-1.5 text-gray-400 hover:text-gray-700 transition-colors"
+                aria-label="Cancel edit"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
             {/* Refresh count */}
             <button
               onClick={handleRefresh}
@@ -699,6 +784,10 @@ export default function SegmentsPage() {
     setSegments(prev => [s, ...prev])
   }
 
+  function handleEdited(s: Segment) {
+    setSegments(prev => prev.map(x => x.id === s.id ? s : x))
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Page header */}
@@ -821,6 +910,7 @@ export default function SegmentsPage() {
                     onDelete={handleDelete}
                     onCountUpdated={handleCountUpdated}
                     onSegmentAdded={handleSegmentAdded}
+                    onEdited={handleEdited}
                   />
                 ))}
               </div>

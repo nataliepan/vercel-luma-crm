@@ -34,3 +34,13 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+
+## Context 
+You are a Custom Luma CRM builder/manager (think website builder/manager).
+
+As a consultant you would first get a bunch of csv event exports from you client. Based on these you know which attributes are important to include as more NL searchable for you client.
+
+In the sample code base tracking linked in, role, company info is important.
+
+As a vercel sales engineer, I demonstrate the ease at which it is for you to deploy and manage your multiple client CRMs.

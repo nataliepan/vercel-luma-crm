@@ -40,7 +40,7 @@ if (fs.existsSync(envPath)) {
     // Strip optional surrounding quotes from value
     const val = raw.replace(/^(['"])(.*)\1$/, '$2');
     // Don't overwrite vars already set in the environment (e.g. CI secrets)
-    if (!(key in process.env)) process.env[key] = val;
+    if (!process.env[key]) process.env[key] = val;
   }
 }
 

@@ -7,6 +7,10 @@ All notable changes to the Luma CRM project are documented here.
 ## [Unreleased]
 
 ### Added
+- `lib/nl-search.ts` — `generateWhereClause` (Claude → WHERE fragment), `validateSQL` (blocks DROP/DELETE/UPDATE/INSERT/semicolons/comments), and `searchContacts` with GIN trigram fallback
+- `checkForHallucinations` helper in `lib/prompts.ts` — used by evals and the outreach pipeline; lazy Anthropic client init so env vars are read at call time not import time
+- `__tests__/evals.test.ts` — 16 tests: 6 NL search cases, 6 `validateSQL` unit tests, 4 hallucination checks; all passing
+- Jest test harness: `jest.config.ts` + `jest.setup.ts` with ts-jest, `--runInBand`, and a custom `.env.local` parser (bypasses Node `--env-file` bug that silently drops lines after a >128-byte value)
 - Smart same-event detection using Luma's `qr_code_url` `evt-XXXX` ID as the primary key — two exports of the same event always match, two different events with the same name never collide
 - Email subset check as fallback when no `qr_code_url` is present — if one file's contacts are a strict subset of the other's, they're the same event
 - Merge-not-replace logic for same-event re-imports: newer export fields win per-contact, contacts only in the older export are preserved, new contacts are added; event row and series count are never incremented

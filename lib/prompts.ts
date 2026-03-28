@@ -85,3 +85,67 @@ Flag any sentence that:
 Return JSON: { "flagged": boolean, "issues": string[] }
 If no issues found: { "flagged": false, "issues": [] }
 `
+
+// ---------------------------------------------------------------------------
+// Runtime helper — used by evals and the outreach pipeline
+// ---------------------------------------------------------------------------
+
+import Anthropic from '@anthropic-ai/sdk'
+
+// Why lazy init: same reason as nl-search.ts — module-level instantiation reads
+// process.env at import time, before setupFiles can inject the key in tests.
+function _getClient() {
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+}
+
+export interface ContactRecord {
+  name: string
+  role: string
+  company: string
+  events: string[]
+}
+
+export interface HallucinationResult {
+  flagged: boolean
+  issues: string[]
+}
+
+/**
+ * Checks an outreach draft for invented facts about the contact.
+ *
+ * Why a separate function not inline in the route: evals import this directly
+ * so the same logic runs in tests and production — no drift between eval
+ * harness and live code.
+ */
+export async function checkForHallucinations(
+  draft: string,
+  contact: ContactRecord
+): Promise<HallucinationResult> {
+  const message = await _getClient().messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 256,
+    system: HALLUCINATION_CHECK_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: `Contact record: ${JSON.stringify(contact)}\n\nDraft: ${draft}`,
+      },
+    ],
+  })
+
+  const text = message.content
+    .filter((b) => b.type === 'text')
+    .map((b) => (b as { type: 'text'; text: string }).text)
+    .join('')
+    .trim()
+
+  try {
+    // Strip markdown fences if present
+    const cleaned = text.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/, '').trim()
+    return JSON.parse(cleaned) as HallucinationResult
+  } catch {
+    // If Claude returns malformed JSON, treat as not flagged but log it
+    console.error('checkForHallucinations: could not parse response', text)
+    return { flagged: false, issues: [] }
+  }
+}

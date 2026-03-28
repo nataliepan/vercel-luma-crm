@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–4 complete, step 5 next
+## Status: Building — steps 1–6 complete, step 7 next
 
 ---
 
@@ -28,6 +28,9 @@ Current progress against the build order defined in CLAUDE.md.
   - Content hash blocks exact duplicate file uploads before any processing
 - [x] **Step 4:** Contact table (`/contacts`) — keyset pagination, debounced trigram search, embed status badge
 - [x] `next.config.ts` loads `.env.local` from main repo root in any git worktree (`--git-common-dir`)
+- [x] **Step 5:** NL search evals (`__tests__/evals.test.ts`) — 16/16 passing: 6 NL search cases, 6 `validateSQL` unit tests, 4 hallucination checks
+- [x] **Step 6:** NL search (`lib/nl-search.ts`) — `generateWhereClause`, `validateSQL` guardrails, trigram fallback; `checkForHallucinations` in `lib/prompts.ts`
+- [x] Jest harness (`jest.config.ts`, `jest.setup.ts`) — ts-jest, `--runInBand`, custom env loader (works around Node `--env-file` bug with long lines)
 
 ---
 
@@ -39,9 +42,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ## Up Next (following build order)
 
-5. **NL search evals** (`__tests__/evals.test.ts`) ← next — write contract before implementation
-6. **NL search** (`lib/nl-search.ts` + guardrails + trigram fallback)
-7. **Segment builder** (`/segments` page) — demo moment #2
+7. **Segment builder** (`/segments` page) — demo moment #2 ← next
 8. **Outreach drafter** (`/outreach` page with streaming) — demo moment #3
 9. **Dashboard** (SSR + Suspense streaming stats)
 10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`)

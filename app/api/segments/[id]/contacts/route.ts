@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { db } from '@/lib/db'
 import { validateSQL, generateWhereClause } from '@/lib/nl-search'
+import { rateLimit } from '@/lib/rate-limit'
 
 // GET /api/segments/[id]/contacts
 // Returns all contacts matching the segment's filter_sql.
@@ -26,56 +27,61 @@ export async function GET(
 
   const { id } = await params
 
-  // Fetch the segment — also verifies ownership via user_id
-  const segmentResult = await db.query(
-    `SELECT filter_sql, label FROM segments WHERE id = $1 AND user_id = $2`,
-    [id, userId]
-  )
-  if (segmentResult.rows.length === 0) {
-    return NextResponse.json({ error: 'Segment not found' }, { status: 404 })
-  }
-
-  const { filter_sql, label } = segmentResult.rows[0]
-
-  // Re-validate stored SQL on every execution — belt-and-suspenders.
-  // Why: filter_sql was validated on creation but defense in depth matters.
-  // A future schema change or DB migration could theoretically introduce
-  // a row with unvalidated SQL. This ensures the guard always runs.
-  let safeSQL: string
   try {
-    safeSQL = validateSQL(filter_sql)
-  } catch {
-    return NextResponse.json({ error: 'Segment filter is invalid' }, { status: 422 })
+    // Fetch the segment — also verifies ownership via user_id
+    const segmentResult = await db.query(
+      `SELECT filter_sql, label FROM segments WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    )
+    if (segmentResult.rows.length === 0) {
+      return NextResponse.json({ error: 'Segment not found' }, { status: 404 })
+    }
+
+    const { filter_sql, label } = segmentResult.rows[0]
+
+    // Re-validate stored SQL on every execution — belt-and-suspenders.
+    // Why: filter_sql was validated on creation but defense in depth matters.
+    // A future schema change or DB migration could theoretically introduce
+    // a row with unvalidated SQL. This ensures the guard always runs.
+    let safeSQL: string
+    try {
+      safeSQL = validateSQL(filter_sql)
+    } catch {
+      return NextResponse.json({ error: 'Segment filter is invalid' }, { status: 422 })
+    }
+
+    const result = await db.query(
+      // Phone is not a promoted column — Luma exports it under various raw headers
+      // ('phone', 'Phone Number', 'Mobile', etc.) which land in raw_fields JSONB.
+      // COALESCE tries common key names in order of likelihood. Returns null if none present.
+      `SELECT id, name, email, given_email, company, role, linkedin_url, created_at,
+              COALESCE(
+                raw_fields->>'phone',
+                raw_fields->>'Phone',
+                raw_fields->>'Phone Number',
+                raw_fields->>'phone_number',
+                raw_fields->>'Mobile',
+                raw_fields->>'mobile'
+              ) AS phone
+       FROM contacts
+       WHERE user_id = $1
+         AND merged_into_id IS NULL
+         AND (${safeSQL})
+       ORDER BY name NULLS LAST, email
+       LIMIT $2`,
+      [userId, SEGMENT_CONTACT_LIMIT]
+    )
+
+    return NextResponse.json({
+      contacts: result.rows,
+      label,
+      total: result.rows.length,
+      capped: result.rows.length === SEGMENT_CONTACT_LIMIT,
+    })
+  } catch (err) {
+    console.error('GET /api/segments/[id]/contacts error:', err)
+    return NextResponse.json({ error: 'Failed to fetch segment contacts' }, { status: 500 })
   }
-
-  const result = await db.query(
-    // Phone is not a promoted column — Luma exports it under various raw headers
-    // ('phone', 'Phone Number', 'Mobile', etc.) which land in raw_fields JSONB.
-    // COALESCE tries common key names in order of likelihood. Returns null if none present.
-    `SELECT id, name, email, given_email, company, role, linkedin_url, created_at,
-            COALESCE(
-              raw_fields->>'phone',
-              raw_fields->>'Phone',
-              raw_fields->>'Phone Number',
-              raw_fields->>'phone_number',
-              raw_fields->>'Mobile',
-              raw_fields->>'mobile'
-            ) AS phone
-     FROM contacts
-     WHERE user_id = $1
-       AND merged_into_id IS NULL
-       AND (${safeSQL})
-     ORDER BY name NULLS LAST, email
-     LIMIT $2`,
-    [userId, SEGMENT_CONTACT_LIMIT]
-  )
-
-  return NextResponse.json({
-    contacts: result.rows,
-    label,
-    total: result.rows.length,
-    capped: result.rows.length === SEGMENT_CONTACT_LIMIT,
-  })
 }
 
 // POST /api/segments/[id]/contacts
@@ -101,9 +107,23 @@ export async function POST(
     const { userId } = await auth()
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+    // Shares the segments rate limit bucket — refine is also an AI call
+    const { allowed, resetMs } = rateLimit(`${userId}:segments`, 30)
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests — please wait a moment' },
+        { status: 429, headers: { 'Retry-After': String(Math.ceil(resetMs / 1000)) } }
+      )
+    }
+
     const { id } = await params
-    const body = await req.json()
-    const description: string = body.description?.trim() ?? ''
+    let body: Record<string, unknown>
+    try {
+      body = await req.json()
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+    }
+    const description: string = (body.description as string)?.trim() ?? ''
 
     if (!description) {
       return NextResponse.json({ error: 'description is required' }, { status: 400 })
@@ -191,7 +211,7 @@ export async function POST(
   } catch (err) {
     console.error('POST /api/segments/[id]/contacts failed:', err)
     return NextResponse.json(
-      { error: (err as Error).message ?? 'Failed to refine contacts' },
+      { error: 'Failed to refine contacts' },
       { status: 500 }
     )
   }

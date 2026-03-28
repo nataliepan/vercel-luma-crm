@@ -3,6 +3,8 @@ import { auth } from '@clerk/nextjs/server'
 import { db } from '@/lib/db'
 import { validateSQL } from '@/lib/nl-search'
 import { OUTREACH_SYSTEM_PROMPT } from '@/lib/prompts'
+import { rateLimit } from '@/lib/rate-limit'
+import { logAICall } from '@/lib/ai-log'
 
 // Why @anthropic-ai/sdk not @ai-sdk/anthropic: the @ai-sdk/anthropic v3 package
 // hits https://api.anthropic.com/messages (missing /v1/ prefix) and returns 404.
@@ -18,7 +20,27 @@ export async function POST(req: Request) {
   const { userId } = await auth()
   if (!userId) return new Response('Unauthorized', { status: 401 })
 
-  const { segmentId, context, type } = await req.json()
+  // Rate limit: max 20 outreach drafts per minute per user.
+  // Why 20/min: each draft costs ~$0.02 in Claude tokens. 20/min caps the
+  // worst case at $0.40/min per user — enough for normal use, prevents abuse.
+  const { allowed, remaining, resetMs } = rateLimit(`${userId}:outreach`, 20)
+  if (!allowed) {
+    return new Response('Too many requests — please wait a moment', {
+      status: 429,
+      headers: {
+        'Retry-After': String(Math.ceil(resetMs / 1000)),
+        'X-RateLimit-Remaining': '0',
+      },
+    })
+  }
+
+  let body: { segmentId?: string; context?: string; type?: string }
+  try {
+    body = await req.json()
+  } catch {
+    return new Response('Invalid JSON body', { status: 400 })
+  }
+  const { segmentId, context, type } = body
 
   if (!segmentId || !context?.trim()) {
     return new Response('segmentId and context are required', { status: 400 })
@@ -73,6 +95,8 @@ export async function POST(req: Request) {
   const encoder = new TextEncoder()
   const stream = new ReadableStream({
     async start(controller) {
+      const startMs = Date.now()
+      let fullOutput = ''
       try {
         const anthropicStream = await getClient().messages.stream({
           model: 'claude-sonnet-4-6',
@@ -86,11 +110,29 @@ export async function POST(req: Request) {
             chunk.type === 'content_block_delta' &&
             chunk.delta.type === 'text_delta'
           ) {
+            fullOutput += chunk.delta.text
             controller.enqueue(encoder.encode(chunk.delta.text))
           }
         }
+
+        logAICall({
+          userId,
+          feature: 'outreach',
+          input: userMessage,
+          output: fullOutput,
+          model: 'claude-sonnet-4-6',
+          durationMs: Date.now() - startMs,
+        })
       } catch (err) {
         console.error('Outreach stream error:', err)
+        logAICall({
+          userId,
+          feature: 'outreach',
+          input: userMessage,
+          model: 'claude-sonnet-4-6',
+          durationMs: Date.now() - startMs,
+          error: (err as Error).message,
+        })
         controller.enqueue(encoder.encode('\n[Error generating draft. Please try again.]'))
       } finally {
         controller.close()

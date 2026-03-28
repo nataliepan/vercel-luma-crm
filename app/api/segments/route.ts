@@ -4,6 +4,8 @@ import Anthropic from '@anthropic-ai/sdk'
 import { db } from '@/lib/db'
 import { validateSQL } from '@/lib/nl-search'
 import { SEGMENT_BUILDER_PROMPT } from '@/lib/prompts'
+import { rateLimit } from '@/lib/rate-limit'
+import { logAICall } from '@/lib/ai-log'
 
 // Why lazy init: module-level instantiation reads process.env at import time.
 // Lazy init ensures the key is available when the function is actually invoked.
@@ -29,7 +31,8 @@ interface SegmentAIResponse {
  * Returns null on AI failure so callers can surface a user-friendly error instead
  * of throwing a 500 that leaks internals.
  */
-async function generateSegment(description: string): Promise<SegmentAIResponse | null> {
+async function generateSegment(description: string, userId: string): Promise<SegmentAIResponse | null> {
+  const startMs = Date.now()
   try {
     const message = await getClient().messages.create({
       model: 'claude-sonnet-4-6',
@@ -50,12 +53,22 @@ async function generateSegment(description: string): Promise<SegmentAIResponse |
 
     if (!parsed.label || !parsed.filter_sql) {
       console.error('generateSegment: missing required fields in response', parsed)
+      logAICall({ userId, feature: 'segment', input: description, output: cleaned, model: 'claude-sonnet-4-6', durationMs: Date.now() - startMs, error: 'missing required fields' })
       return null
     }
+
+    logAICall({
+      userId, feature: 'segment', input: description, output: cleaned,
+      model: 'claude-sonnet-4-6',
+      tokensIn: message.usage?.input_tokens,
+      tokensOut: message.usage?.output_tokens,
+      durationMs: Date.now() - startMs,
+    })
 
     return parsed
   } catch (err) {
     console.error('generateSegment: AI call failed', err)
+    logAICall({ userId, feature: 'segment', input: description, model: 'claude-sonnet-4-6', durationMs: Date.now() - startMs, error: (err as Error).message })
     return null
   }
 }
@@ -65,17 +78,22 @@ export async function GET() {
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  // Why ORDER BY created_at DESC: most recently created segments are most relevant
-  // for the current session — puts new work at the top without requiring the user to scroll.
-  const result = await db.query(
-    `SELECT id, label, description, filter_sql, contact_count, created_at, updated_at
-     FROM segments
-     WHERE user_id = $1
-     ORDER BY created_at DESC`,
-    [userId]
-  )
+  try {
+    // Why ORDER BY created_at DESC: most recently created segments are most relevant
+    // for the current session — puts new work at the top without requiring the user to scroll.
+    const result = await db.query(
+      `SELECT id, label, description, filter_sql, contact_count, created_at, updated_at
+       FROM segments
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [userId]
+    )
 
-  return NextResponse.json({ segments: result.rows })
+    return NextResponse.json({ segments: result.rows })
+  } catch (err) {
+    console.error('GET /api/segments error:', err)
+    return NextResponse.json({ error: 'Failed to fetch segments' }, { status: 500 })
+  }
 }
 
 // POST /api/segments — create a segment from a plain-English description
@@ -98,10 +116,32 @@ export async function POST(req: Request) {
     const { userId } = await auth()
     if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    const body = await req.json()
-    const description: string = body.description?.trim() ?? ''
+    // Rate limit: max 30 segment AI calls per minute per user.
+    // Why 30 not 20: preview mode fires on every debounced keystroke (~600ms),
+    // so normal typing generates 5-10 requests/min. 30 provides headroom for
+    // fast iteration while still blocking automated abuse.
+    const { allowed, resetMs } = rateLimit(`${userId}:segments`, 30)
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many requests — please wait a moment' },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': String(Math.ceil(resetMs / 1000)),
+          },
+        }
+      )
+    }
+
+    let body: Record<string, unknown>
+    try {
+      body = await req.json()
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+    }
+    const description: string = (body.description as string)?.trim() ?? ''
     const preview: boolean = body.preview !== false // default true if not specified
-    const baseSegmentId: string | null = body.base_segment_id ?? null
+    const baseSegmentId: string | null = (body.base_segment_id as string) ?? null
 
     if (!description) {
       return NextResponse.json({ error: 'description is required' }, { status: 400 })
@@ -133,7 +173,7 @@ export async function POST(req: Request) {
     const promptDescription = baseLabel
       ? `Refine the "${baseLabel}" segment: ${description}`
       : description
-    const segment = await generateSegment(promptDescription)
+    const segment = await generateSegment(promptDescription, userId)
     if (!segment) {
       return NextResponse.json(
         { error: 'Could not generate a segment from that description. Try rephrasing.' },
@@ -236,7 +276,7 @@ export async function POST(req: Request) {
     // then throws as a SyntaxError — obscuring the real problem from the user.
     console.error('POST /api/segments failed:', err)
     return NextResponse.json(
-      { error: (err as Error).message ?? 'Failed to create segment' },
+      { error: 'Failed to create segment' },
       { status: 500 }
     )
   }
@@ -256,9 +296,14 @@ export async function PATCH(req: Request) {
     const id = searchParams.get('id')
     if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
 
-    const body = await req.json()
-    const label: string | undefined = body.label?.trim()
-    const description: string | undefined = body.description?.trim()
+    let body: Record<string, unknown>
+    try {
+      body = await req.json()
+    } catch {
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
+    }
+    const label: string | undefined = (body.label as string)?.trim()
+    const description: string | undefined = (body.description as string)?.trim()
 
     if (!label && !description) {
       return NextResponse.json({ error: 'label or description is required' }, { status: 400 })
@@ -282,7 +327,7 @@ export async function PATCH(req: Request) {
   } catch (err) {
     console.error('PATCH /api/segments failed:', err)
     return NextResponse.json(
-      { error: (err as Error).message ?? 'Failed to update segment' },
+      { error: 'Failed to update segment' },
       { status: 500 }
     )
   }
@@ -309,7 +354,7 @@ export async function DELETE(req: Request) {
   } catch (err) {
     console.error('DELETE /api/segments failed:', err)
     return NextResponse.json(
-      { error: (err as Error).message ?? 'Failed to delete segment' },
+      { error: 'Failed to delete segment' },
       { status: 500 }
     )
   }

@@ -13,6 +13,23 @@ export const maxDuration = 120
 const CONTACT_CANONICAL_FIELDS = new Set(['email', 'name', 'company', 'role', 'linkedin_url', 'given_email', 'notes'])
 const EVENT_CANONICAL_FIELDS = new Set(['approval_status', 'has_joined_event', 'registered_at'])
 
+// Ticket/payment fields promoted from raw_row to proper contact_events columns.
+// Why promote: enables segment queries like "contacts who used coupon codes" or
+// "people who paid $649+ across 3 events" without JSONB gymnastics.
+// The schema mapper maps these via the raw column name — we extract them here
+// directly from the raw row using known Luma field names.
+const TICKET_RAW_KEYS = ['amount', 'amount_tax', 'amount_discount', 'currency', 'coupon_code', 'ticket_name', 'ticket_type_id'] as const
+type TicketKey = typeof TICKET_RAW_KEYS[number]
+
+function extractTicketFields(row: Record<string, string>): Record<TicketKey, string | null> {
+  const result = {} as Record<TicketKey, string | null>
+  for (const key of TICKET_RAW_KEYS) {
+    const val = row[key]?.trim() || null
+    result[key] = val === '' ? null : val
+  }
+  return result
+}
+
 // Extract Luma's own event ID from any qr_code_url in the CSV rows.
 // Why: Luma encodes a stable evt-XXXX identifier in every check-in URL.
 // Two exports of the same event always share the same evt-XXXX.
@@ -64,21 +81,58 @@ function normalizeApprovalStatus(val: string | null | undefined): string {
   return 'pending'
 }
 
+// Normalize a raw CSV header into a clean key for custom_responses.
+// Why normalize: "What's your LinkedIn? *" and "whats_your_linkedin" should
+// produce consistent keys so downstream JSONB queries don't need to know
+// the exact original header from each CSV export.
+// Rules: lowercase, spaces→underscores, strip trailing * and ?, strip leading/trailing whitespace.
+function normalizeCustomKey(header: string): string {
+  return header
+    .toLowerCase()
+    .replace(/[*?]+$/g, '')      // strip trailing * and ?
+    .replace(/\s+/g, '_')        // spaces to underscores
+    .replace(/[^\w]/g, '_')      // any non-word char → underscore
+    .replace(/_+/g, '_')         // collapse consecutive underscores
+    .replace(/^_|_$/g, '')       // strip leading/trailing underscores
+}
+
 function extractFields(row: Record<string, string>, columnMap: Record<string, string>) {
   const contactFields: Record<string, string | null> = {}
   const eventFields: Record<string, string | null> = {}
   const customResponses: Record<string, string> = {}
 
+  // Collect which raw headers appear in columnMap to detect completely unmapped columns
+  const mappedHeaders = new Set(Object.keys(columnMap))
+
   for (const [rawHeader, canonical] of Object.entries(columnMap)) {
     const value = row[rawHeader]?.trim() || null
     if (!value) continue
-    if (CONTACT_CANONICAL_FIELDS.has(canonical)) {
+    if (CONTACT_CANONICAL_FIELDS.has(canonical) && canonical !== 'notes') {
+      // Known contact field — promote to contacts table
       contactFields[canonical] = value
     } else if (EVENT_CANONICAL_FIELDS.has(canonical)) {
+      // Known event field — promote to contact_events columns
       eventFields[canonical] = value
     } else {
-      // 'notes' and unmapped fields go into custom_responses
-      customResponses[rawHeader] = row[rawHeader]
+      // 'notes' catch-all and any other unmapped canonical value both go to custom_responses.
+      // Why not contacts.notes: notes collapses all free-text into one blob, losing structure.
+      // custom_responses preserves each question's answer under its own key, enabling
+      // JSONB queries like custom_responses->>'city' = 'San Francisco'.
+      // Use the original raw header (normalized) as the key — it's the most meaningful label.
+      const key = normalizeCustomKey(rawHeader)
+      if (key) customResponses[key] = row[rawHeader]
+    }
+  }
+
+  // Also capture any CSV columns that were not in the schema mapper's output at all.
+  // Why: mapSchema returns only recognized headers; novel headers silently disappear.
+  // Capturing them in custom_responses ensures no registration data is lost.
+  for (const rawHeader of Object.keys(row)) {
+    if (!mappedHeaders.has(rawHeader)) {
+      const value = row[rawHeader]?.trim()
+      if (!value) continue
+      const key = normalizeCustomKey(rawHeader)
+      if (key && !customResponses[key]) customResponses[key] = value
     }
   }
 
@@ -88,11 +142,18 @@ function extractFields(row: Record<string, string>, columnMap: Record<string, st
     role: contactFields.role ?? null,
     linkedinUrl: contactFields.linkedin_url ?? null,
     givenEmail: contactFields.given_email ?? null,
-    notes: contactFields.notes ?? null,
+    // Why notes is always null now: all free-text answers are in customResponses.
+    // Keeping the notes field null avoids duplicating data that's already structured
+    // in custom_responses. The contacts.notes column remains for manual annotations.
+    notes: null,
     approvalStatus: normalizeApprovalStatus(eventFields.approval_status),
     hasJoinedEvent: eventFields.has_joined_event?.toLowerCase() === 'true',
     registeredAt: eventFields.registered_at ? new Date(eventFields.registered_at) : null,
     customResponses,
+    // Ticket/payment fields extracted directly from raw row by known Luma column names.
+    // Why not via schema mapper: these keys are stable in every Luma export so we
+    // don't need AI to identify them. Direct extraction is faster and more reliable.
+    ticket: extractTicketFields(row),
   }
 }
 
@@ -383,6 +444,13 @@ export async function POST(req: Request) {
     const ceHasJoined: boolean[] = []
     const ceCustomResponses: string[] = []
     const ceRawRows: string[] = []
+    const ceAmounts: (string | null)[] = []
+    const ceAmountTaxes: (string | null)[] = []
+    const ceAmountDiscounts: (string | null)[] = []
+    const ceCurrencies: (string | null)[] = []
+    const ceCouponCodes: (string | null)[] = []
+    const ceTicketNames: (string | null)[] = []
+    const ceTicketTypeIds: (string | null)[] = []
 
     for (let i = 0; i < upsertEmails.length; i++) {
       const contactId = emailToContactId.get(upsertEmails[i])
@@ -394,24 +462,46 @@ export async function POST(req: Request) {
       ceHasJoined.push(fields.hasJoinedEvent)
       ceCustomResponses.push(JSON.stringify(fields.customResponses))
       ceRawRows.push(upsertRawFields[i])
+      ceAmounts.push(fields.ticket.amount)
+      ceAmountTaxes.push(fields.ticket.amount_tax)
+      ceAmountDiscounts.push(fields.ticket.amount_discount)
+      ceCurrencies.push(fields.ticket.currency)
+      ceCouponCodes.push(fields.ticket.coupon_code)
+      ceTicketNames.push(fields.ticket.ticket_name)
+      ceTicketTypeIds.push(fields.ticket.ticket_type_id)
     }
 
     // Bulk contact_events upsert — one round-trip for all rows.
-    // Why ON CONFLICT DO UPDATE not DO NOTHING: approval status may change
-    // between exports (pending → approved). We always want the latest state.
+    // Why ON CONFLICT DO UPDATE not DO NOTHING: approval status, amount, and coupon
+    // may change between exports (pending → approved, coupon applied after initial
+    // registration). We always want the latest values from the most recent export.
     await db.query(`
       INSERT INTO contact_events
-        (contact_id, event_id, registered_at, approval_status, has_joined_event, custom_responses, raw_row)
-      SELECT d.contact_id, $1, d.registered_at, d.approval_status, d.has_joined_event, d.custom_responses::jsonb, d.raw_row::jsonb
+        (contact_id, event_id, registered_at, approval_status, has_joined_event,
+         custom_responses, raw_row,
+         amount, amount_tax, amount_discount, currency, coupon_code, ticket_name, ticket_type_id)
+      SELECT d.contact_id, $1, d.registered_at, d.approval_status, d.has_joined_event,
+             d.custom_responses::jsonb, d.raw_row::jsonb,
+             d.amount, d.amount_tax, d.amount_discount, d.currency, d.coupon_code, d.ticket_name, d.ticket_type_id
       FROM unnest(
-        $2::uuid[], $3::timestamptz[], $4::text[], $5::boolean[], $6::text[], $7::text[]
-      ) AS d(contact_id, registered_at, approval_status, has_joined_event, custom_responses, raw_row)
+        $2::uuid[], $3::timestamptz[], $4::text[], $5::boolean[], $6::text[], $7::text[],
+        $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[], $14::text[]
+      ) AS d(contact_id, registered_at, approval_status, has_joined_event, custom_responses, raw_row,
+             amount, amount_tax, amount_discount, currency, coupon_code, ticket_name, ticket_type_id)
       ON CONFLICT (contact_id, event_id) DO UPDATE SET
         approval_status  = EXCLUDED.approval_status,
         has_joined_event = EXCLUDED.has_joined_event,
         custom_responses = EXCLUDED.custom_responses,
-        raw_row          = EXCLUDED.raw_row
-    `, [eventId, ceContactIds, ceRegisteredAts, ceApprovalStatuses, ceHasJoined, ceCustomResponses, ceRawRows])
+        raw_row          = EXCLUDED.raw_row,
+        amount           = COALESCE(EXCLUDED.amount, contact_events.amount),
+        amount_tax       = COALESCE(EXCLUDED.amount_tax, contact_events.amount_tax),
+        amount_discount  = COALESCE(EXCLUDED.amount_discount, contact_events.amount_discount),
+        currency         = COALESCE(EXCLUDED.currency, contact_events.currency),
+        coupon_code      = COALESCE(EXCLUDED.coupon_code, contact_events.coupon_code),
+        ticket_name      = COALESCE(EXCLUDED.ticket_name, contact_events.ticket_name),
+        ticket_type_id   = COALESCE(EXCLUDED.ticket_type_id, contact_events.ticket_type_id)
+    `, [eventId, ceContactIds, ceRegisteredAts, ceApprovalStatuses, ceHasJoined, ceCustomResponses, ceRawRows,
+        ceAmounts, ceAmountTaxes, ceAmountDiscounts, ceCurrencies, ceCouponCodes, ceTicketNames, ceTicketTypeIds])
   }
 
   // Step 9: Update event approval counts and event_date

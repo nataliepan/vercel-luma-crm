@@ -21,8 +21,26 @@ Example: {"Email Address": "email", "Full Name": "name", "Company Name": "compan
 
 export const NL_SEARCH_PROMPT = `
 You convert natural language contact search queries into PostgreSQL WHERE clauses.
+
 The contacts table has columns: name, email, company, role, notes, created_at.
-There is also a contact_events join that gives access to events.name and events.tags.
+
+The contact_events table (alias: ce, join via ce.contact_id = contacts.id) has:
+- events.name, events.tags (join events e ON ce.event_id = e.id)
+- approval_status TEXT ('approved', 'pending', 'declined', 'invited')
+- has_joined_event BOOLEAN
+- amount TEXT (e.g. '$649.00' — ticket price paid, NULL if free)
+- amount_discount TEXT (discount applied)
+- currency TEXT (e.g. 'usd')
+- coupon_code TEXT (coupon used at checkout, NULL if none)
+- ticket_name TEXT (e.g. 'Women''s Grant', 'Bootstrapped Founder')
+- ticket_type_id TEXT
+- custom_responses JSONB — registration question answers, keyed by normalized question label.
+  Common keys from Luma exports: city, linkedin, industry, funding_stage, product_stage,
+  team_size, funding_raised, arr, how_did_you_hear, what_are_you_working_on, company, role.
+  Keys are lowercase with underscores (e.g. "What's your city?" → "whats_your_city").
+  Access with: ce.custom_responses->>'city'  (returns text, NULL if absent)
+- raw_row JSONB — verbatim original CSV row. Use as fallback if custom_responses key not found:
+  ce.raw_row->>'What is your city?'  (use the exact original column header as key)
 
 Rules:
 - Return ONLY the WHERE clause body, no SELECT/FROM/WHERE keywords
@@ -30,15 +48,43 @@ Rules:
   The caller wraps your output in a parameterized query where $1 = user_id.
   Any additional values must be inline string literals, not bind parameters.
 - Never use subqueries that could be expensive
-- If the query references event attendance, use EXISTS with contact_events
-- Maximum one JOIN
+- If the query references event attendance, ticket/payment, or registration question data,
+  use EXISTS with contact_events (alias ce)
+- Maximum one JOIN per EXISTS subquery
 - Never reference columns that don't exist in the schema above
+- For "paid" contacts: amount IS NOT NULL AND amount != '$0.00'
+- For coupon users: coupon_code IS NOT NULL
+- For JSONB fields: use ->>'key' to extract text, then ILIKE or = for comparison
 
 Example input: "founders who attended AI events"
 Example output: role ILIKE '%founder%' AND EXISTS (
   SELECT 1 FROM contact_events ce
   JOIN events e ON ce.event_id = e.id
   WHERE ce.contact_id = contacts.id AND 'AI' = ANY(e.tags)
+)
+
+Example input: "contacts who used a coupon code"
+Example output: EXISTS (
+  SELECT 1 FROM contact_events ce
+  WHERE ce.contact_id = contacts.id AND ce.coupon_code IS NOT NULL
+)
+
+Example input: "people who paid for a ticket"
+Example output: EXISTS (
+  SELECT 1 FROM contact_events ce
+  WHERE ce.contact_id = contacts.id AND ce.amount IS NOT NULL AND ce.amount != '$0.00'
+)
+
+Example input: "people from San Francisco"
+Example output: EXISTS (
+  SELECT 1 FROM contact_events ce
+  WHERE ce.contact_id = contacts.id AND ce.custom_responses->>'city' ILIKE '%san francisco%'
+)
+
+Example input: "founders at Series A stage"
+Example output: role ILIKE '%founder%' AND EXISTS (
+  SELECT 1 FROM contact_events ce
+  WHERE ce.contact_id = contacts.id AND ce.custom_responses->>'funding_stage' ILIKE '%series a%'
 )
 `
 // Why inline literals not bind params: the WHERE clause is generated as a string
@@ -48,14 +94,43 @@ Example output: role ILIKE '%founder%' AND EXISTS (
 // and the query always runs with user_id = $1 enforcing row-level isolation.
 
 export const SEGMENT_BUILDER_PROMPT = `
-You build audience segments from plain-English descriptions.
-Return a JSON object with:
-- label: short segment name (max 4 words)
+You build audience segments from plain-English descriptions for a startup community builder.
+Return ONLY a JSON object (no markdown fences) with exactly these fields:
+- label: short segment name (max 4 words, title case)
 - description: one sentence explaining who's in this segment
-- filter_sql: a safe PostgreSQL WHERE clause (same rules as NL search prompt)
+- filter_sql: a safe PostgreSQL WHERE clause fragment (see rules below)
 
-The user is a startup community builder. Segments are for newsletters,
-event invites, and speaker outreach.
+The contacts table has columns: name, email, company, role, notes, created_at.
+
+The contact_events table (alias: ce, join via ce.contact_id = contacts.id) has:
+- events.name, events.tags (join events e ON ce.event_id = e.id)
+- approval_status TEXT ('approved', 'pending', 'declined', 'invited')
+- has_joined_event BOOLEAN
+- amount TEXT (ticket price, NULL if free)
+- coupon_code TEXT (NULL if none)
+- ticket_name TEXT
+- custom_responses JSONB — registration question answers keyed by normalized label.
+  Common keys: city, linkedin, industry, funding_stage, product_stage, team_size,
+  funding_raised, arr, how_did_you_hear, what_are_you_working_on.
+  Access with: ce.custom_responses->>'city'
+
+filter_sql rules:
+- Return ONLY the WHERE clause body, no SELECT/FROM/WHERE keywords
+- Use only inline literal string comparisons — no $2, $3 bind parameters
+  (the caller already provides $1 = user_id and appends AND merged_into_id IS NULL)
+- Use EXISTS with contact_events when filtering by event, ticket, or registration data
+- Maximum one JOIN per EXISTS subquery
+- Never reference non-existent columns
+- For JSONB: use ->>'key' ILIKE '%value%'
+- For "paid": amount IS NOT NULL AND amount != '$0.00'
+
+Segments are for newsletters, event invites, and speaker outreach.
+
+Example input: "Founders who attended 3+ events"
+Example output: {"label": "Active Founders", "description": "Founders who attended three or more events.", "filter_sql": "role ILIKE '%founder%' AND (SELECT COUNT(DISTINCT ce.event_id) FROM contact_events ce WHERE ce.contact_id = contacts.id) >= 3"}
+
+Example input: "VCs in San Francisco"
+Example output: {"label": "SF VCs", "description": "Investors based in San Francisco.", "filter_sql": "role ILIKE '%VC%' OR role ILIKE '%venture%' OR role ILIKE '%investor%'"}
 `
 
 export const OUTREACH_SYSTEM_PROMPT = `

@@ -2,10 +2,11 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Users, Upload, Search } from 'lucide-react'
+import { Users, Upload, Search, Filter } from 'lucide-react'
 
 const records = [
   { href: '/contacts', label: 'Contacts', icon: Users },
+  { href: '/segments', label: 'Segments', icon: Filter },
   { href: '/import', label: 'Import', icon: Upload },
 ]
 

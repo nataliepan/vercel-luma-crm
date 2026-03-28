@@ -7,6 +7,18 @@ All notable changes to the Luma CRM project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Segment builder** (`/segments` page + `GET|POST|DELETE /api/segments`) — plain-English audience segments with AI-generated WHERE clause, 600ms debounced live preview showing contact count + 3 sample matches, 10 example query chips to solve the cold-start blank-textarea problem, saved segment list with collapsible SQL view and delete
+- Ticket/payment fields promoted from `raw_row` to proper `contact_events` columns: `amount`, `amount_tax`, `amount_discount`, `currency`, `coupon_code`, `ticket_name`, `ticket_type_id` — enables segment queries like "contacts who used a coupon" or "people who paid for a ticket" without JSONB gymnastics
+- `scripts/migrate-ticket-fields.mts` — one-time migration to backfill ticket columns from existing `raw_row` data + partial index on `coupon_code`
+- `normalizeCustomKey()` in import pipeline — normalizes raw CSV headers to consistent snake_case keys for `custom_responses` JSONB (e.g. `"What's your city? *"` → `"whats_your_city"`)
+- Segments link added to sidebar nav
+
+### Changed
+- `extractFields()` in `app/api/import/route.ts` — unmapped and `notes`-mapped fields now go to `custom_responses` (keyed by normalized header) instead of `contacts.notes`; novel headers not in the schema mapper output are also captured so no registration data is silently lost
+- `NL_SEARCH_PROMPT` expanded with full `contact_events` schema: ticket fields, `custom_responses` JSONB access patterns, `raw_row` fallback, and 4 new examples (coupon, paid ticket, city, funding stage)
+- `SEGMENT_BUILDER_PROMPT` rewritten with full schema context, structured JSON output format, filter_sql rules, and 2 examples
+
+### Added
 - `lib/nl-search.ts` — `generateWhereClause` (Claude → WHERE fragment), `validateSQL` (blocks DROP/DELETE/UPDATE/INSERT/semicolons/comments), and `searchContacts` with GIN trigram fallback
 - `checkForHallucinations` helper in `lib/prompts.ts` — used by evals and the outreach pipeline; lazy Anthropic client init so env vars are read at call time not import time
 - `__tests__/evals.test.ts` — 16 tests: 6 NL search cases, 6 `validateSQL` unit tests, 4 hallucination checks; all passing

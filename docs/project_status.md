@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1–6 complete, step 7 next
+## Status: Building — steps 1–7 complete, step 8 next
 
 ---
 
@@ -31,6 +31,14 @@ Current progress against the build order defined in CLAUDE.md.
 - [x] **Step 5:** NL search evals (`__tests__/evals.test.ts`) — 16/16 passing: 6 NL search cases, 6 `validateSQL` unit tests, 4 hallucination checks
 - [x] **Step 6:** NL search (`lib/nl-search.ts`) — `generateWhereClause`, `validateSQL` guardrails, trigram fallback; `checkForHallucinations` in `lib/prompts.ts`
 - [x] Jest harness (`jest.config.ts`, `jest.setup.ts`) — ts-jest, `--runInBand`, custom env loader (works around Node `--env-file` bug with long lines)
+- [x] **Step 7:** Segment builder (`/segments` page + `/api/segments`)
+  - Plain-English → AI-generated PostgreSQL WHERE clause via `SEGMENT_BUILDER_PROMPT`
+  - `validateSQL()` gates all AI-generated SQL before execution
+  - 600ms debounced live preview: contact count + 3 sample matches before saving
+  - 10 example query chips (founders, coupon users, paid tickets, VCs, city, funding stage, etc.)
+  - Saved segments list with collapsible SQL view and delete
+  - Ticket/payment fields (`amount`, `coupon_code`, etc.) promoted to proper columns + migration script
+  - `custom_responses` now correctly populated from all unmapped CSV fields (normalized snake_case keys)
 
 ---
 
@@ -42,8 +50,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ## Up Next (following build order)
 
-7. **Segment builder** (`/segments` page) — demo moment #2 ← next
-8. **Outreach drafter** (`/outreach` page with streaming) — demo moment #3
+8. **Outreach drafter** (`/outreach` page with streaming) — demo moment #3 ← next
 9. **Dashboard** (SSR + Suspense streaming stats)
 10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`)
 11. **`vercel.json` + cron routes** (`/api/cron/embed`, `/api/cron/dedup`)

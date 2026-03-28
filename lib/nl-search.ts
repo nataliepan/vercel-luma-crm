@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { db } from './db'
 import { NL_SEARCH_PROMPT } from './prompts'
+import { logAICall } from './ai-log'
 
 // Why lazy init: instantiating at module load reads process.env at import time.
 // In tests, setupFiles sets env vars before tests run but after module evaluation.
@@ -89,8 +90,14 @@ export async function generateWhereClause(query: string): Promise<string> {
  */
 export async function searchContacts(query: string, userId: string) {
   try {
+    const startMs = Date.now()
     const whereClause = await generateWhereClause(query)
     const validated = validateSQL(whereClause)
+
+    logAICall({
+      userId, feature: 'nl_search', input: query, output: validated,
+      model: 'claude-sonnet-4-6', durationMs: Date.now() - startMs,
+    })
 
     // Why SET LOCAL probes=1: interactive search prioritises speed over recall.
     // Dedup uses probes=10 for higher recall; search users tolerate a few misses.
@@ -106,6 +113,10 @@ export async function searchContacts(query: string, userId: string) {
     )
   } catch (err) {
     console.error('NL search failed, falling back to trigram search:', err)
+    logAICall({
+      userId, feature: 'nl_search', input: query,
+      model: 'claude-sonnet-4-6', error: (err as Error).message,
+    })
 
     return await db.query(
       `SELECT id, name, email, company, role, embedding_status, created_at

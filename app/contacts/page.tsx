@@ -127,14 +127,22 @@ export default function ContactsPage() {
 
   useEffect(() => {
     fetch('/api/contacts/count')
-      .then(r => r.json())
-      .then(d => setTotal(d.count))
+      .then(r => {
+        if (!r.ok) return null
+        return r.json()
+      })
+      .then(d => { if (d?.count != null) setTotal(d.count) })
       .catch(() => {})
   }, [])
 
   useEffect(() => {
     fetchContacts('')
   }, [fetchContacts])
+
+  // Cleanup debounce timer on unmount — prevents setState on unmounted component
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [])
 
   // Debounced search — wait 300ms after last keystroke before querying
   // Why debounce: trigram search on 25k rows is fast but we still don't want

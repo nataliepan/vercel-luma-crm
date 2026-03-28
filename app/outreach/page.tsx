@@ -4,7 +4,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Button } from '@/components/ui/button'
-import { Sparkles, Copy, Check, RefreshCw, ChevronDown } from 'lucide-react'
+import { Sparkles, Copy, Check, RefreshCw, ChevronDown, AlertTriangle } from 'lucide-react'
 
 type Segment = {
   id: string
@@ -35,8 +35,21 @@ export default function OutreachPage() {
 
   const [copied, setCopied] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Hallucination check — runs automatically after streaming completes
+  const [hallucinationIssues, setHallucinationIssues] = useState<string[]>([])
+  const [checkingHallucinations, setCheckingHallucinations] = useState(false)
   // Abort controller lets us cancel an in-flight stream if the user hits Regenerate
   const abortRef = useRef<AbortController | null>(null)
+
+  // Cleanup abort controller and copy timer on unmount — prevents setState on
+  // unmounted component and cancels in-flight stream if user navigates away.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     async function load() {
@@ -76,7 +89,11 @@ export default function OutreachPage() {
 
     setDraft('')
     setStreamError(null)
+    setHallucinationIssues([])
+    setCheckingHallucinations(false)
     setIsStreaming(true)
+
+    let completedDraft = ''
 
     try {
       const res = await fetch('/api/outreach', {
@@ -105,7 +122,9 @@ export default function OutreachPage() {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        setDraft(prev => prev + decoder.decode(value, { stream: true }))
+        const chunk = decoder.decode(value, { stream: true })
+        completedDraft += chunk
+        setDraft(prev => prev + chunk)
       }
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
@@ -113,6 +132,41 @@ export default function OutreachPage() {
       }
     } finally {
       setIsStreaming(false)
+    }
+
+    // Run hallucination check after stream completes.
+    // Why post-stream not inline: checking inline would block the stream or negate
+    // the streaming UX. Running after lets the user read the draft while the check
+    // happens in the background.
+    if (completedDraft && !controller.signal.aborted) {
+      setCheckingHallucinations(true)
+      try {
+        const seg = segments.find(s => s.id === selectedSegmentId)
+        const checkRes = await fetch('/api/outreach/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            draft: completedDraft,
+            contact: {
+              name: seg?.label ?? '',
+              role: '',
+              company: '',
+              events: [],
+            },
+          }),
+          signal: controller.signal,
+        })
+        if (checkRes.ok) {
+          const result = await checkRes.json()
+          if (result.flagged && result.issues?.length > 0) {
+            setHallucinationIssues(result.issues)
+          }
+        }
+      } catch {
+        // Hallucination check is non-critical — if it fails, the draft is still usable
+      } finally {
+        setCheckingHallucinations(false)
+      }
     }
   }
 
@@ -267,6 +321,32 @@ export default function OutreachPage() {
                 {isStreaming && (
                   <span className="inline-block w-0.5 h-4 bg-gray-400 animate-pulse ml-0.5 align-middle" />
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Hallucination check status / warnings */}
+          {checkingHallucinations && (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <Sparkles className="w-3 h-3 animate-pulse" />
+              Checking draft for accuracy…
+            </div>
+          )}
+          {hallucinationIssues.length > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800">Potential accuracy issues</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {hallucinationIssues.map((issue, i) => (
+                      <li key={i} className="text-xs text-amber-700">• {issue}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-xs text-amber-600">
+                    Review these before sending — the draft may reference details not in your contact data.
+                  </p>
+                </div>
               </div>
             </div>
           )}

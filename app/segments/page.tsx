@@ -172,6 +172,14 @@ function SegmentCard({
   const [copied, setCopied] = useState(false)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Cleanup timers on unmount — prevents setState on unmounted component
+  useEffect(() => {
+    return () => {
+      if (refineDebounceRef.current) clearTimeout(refineDebounceRef.current)
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    }
+  }, [])
+
   // Lazily fetch contacts when the panel is first expanded.
   // Why lazy: most segment cards are viewed for their count/description without
   // drilling in. Fetching all contacts on mount would waste bandwidth for every
@@ -723,6 +731,11 @@ export default function SegmentsPage() {
   useEffect(() => {
     loadSegments()
   }, [loadSegments])
+
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [])
 
   // Live preview — debounced 600ms after last keystroke.
   // Why 600ms not 300ms: segment generation calls Claude (~1-2s) — a shorter

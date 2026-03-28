@@ -20,24 +20,23 @@ export async function POST(
 
   const { id } = await params
 
-  const segmentResult = await db.query(
-    `SELECT filter_sql FROM segments WHERE id = $1 AND user_id = $2`,
-    [id, userId]
-  )
-  if (segmentResult.rows.length === 0) {
-    return NextResponse.json({ error: 'Segment not found' }, { status: 404 })
-  }
-
-  const { filter_sql } = segmentResult.rows[0]
-
-  let safeSQL: string
   try {
-    safeSQL = validateSQL(filter_sql)
-  } catch {
-    return NextResponse.json({ error: 'Segment filter is invalid' }, { status: 422 })
-  }
+    const segmentResult = await db.query(
+      `SELECT filter_sql FROM segments WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    )
+    if (segmentResult.rows.length === 0) {
+      return NextResponse.json({ error: 'Segment not found' }, { status: 404 })
+    }
 
-  try {
+    const { filter_sql } = segmentResult.rows[0]
+
+    let safeSQL: string
+    try {
+      safeSQL = validateSQL(filter_sql)
+    } catch {
+      return NextResponse.json({ error: 'Segment filter is invalid' }, { status: 422 })
+    }
     const countResult = await db.query(
       `SELECT COUNT(*) FROM contacts
        WHERE user_id = $1 AND merged_into_id IS NULL AND (${safeSQL})`,

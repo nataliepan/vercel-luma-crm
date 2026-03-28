@@ -310,7 +310,7 @@ export async function POST(req: Request) {
            WHERE ce.event_id = $1 AND lower(c.email) = ANY($2::text[])`,
           [seriesCheck.rows[0].id, incomingEmails]
         )
-        const matched = parseInt(overlapCheck.rows[0].count)
+        const matched = parseInt(overlapCheck.rows[0]?.count ?? '0', 10)
         const overlapPct = matched / incomingEmails.length
 
         if (overlapPct > 0.6) {
@@ -532,8 +532,17 @@ export async function POST(req: Request) {
   // Step 11: Store CSV in Vercel Blob (optional — audit trail)
   // Why private not public: CSV files contain personal contact data.
   // Why optional: BLOB_READ_WRITE_TOKEN may be empty in local dev.
+  // Why try/catch: Blob upload is non-critical — the import already succeeded.
+  // A Blob failure should never roll back a completed import.
   if (process.env.BLOB_READ_WRITE_TOKEN) {
-    await put(`imports/${userId}/${file.name}`, csvText, { access: 'public' })
+    try {
+      // Why sanitize: file.name could contain path traversal chars (../) —
+      // strip everything except safe filename characters before constructing the path.
+      const safeName = file.name.replace(/[^a-z0-9._-]/gi, '_')
+      await put(`imports/${userId}/${safeName}`, csvText, { access: 'public' })
+    } catch (blobErr) {
+      console.error('Blob upload failed (non-critical):', blobErr)
+    }
   }
 
   return NextResponse.json({
@@ -553,9 +562,11 @@ export async function POST(req: Request) {
     // cause Next.js to return an HTML 500 page. The client calls res.json() which
     // then throws a SyntaxError caught as a misleading "Network error".
     // Returning JSON here gives the client a real error message to display.
+    // Why generic message: err.message may contain internal details like
+    // DB connection strings or API key errors — never expose those to the client.
     console.error('Import failed:', err)
     return NextResponse.json(
-      { error: (err as Error).message ?? 'Import failed' },
+      { error: 'Import failed — please try again' },
       { status: 500 }
     )
   }

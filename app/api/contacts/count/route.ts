@@ -11,7 +11,7 @@ export async function GET() {
       `SELECT COUNT(*) FROM contacts WHERE user_id = $1 AND merged_into_id IS NULL`,
       [userId]
     )
-    return NextResponse.json({ count: parseInt(result.rows[0].count) })
+    return NextResponse.json({ count: parseInt(result.rows[0]?.count ?? '0', 10) })
   } catch (err) {
     console.error('GET /api/contacts/count error:', err)
     return NextResponse.json({ error: 'Failed to fetch contact count' }, { status: 500 })

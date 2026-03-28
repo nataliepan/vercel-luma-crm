@@ -4,7 +4,7 @@ Current progress against the build order defined in CLAUDE.md.
 
 ---
 
-## Status: Building — steps 1 and 2 complete
+## Status: Building — steps 1–4 complete, step 5 next
 
 ---
 
@@ -18,30 +18,37 @@ Current progress against the build order defined in CLAUDE.md.
 - [x] Next.js 14 scaffolded (App Router, TypeScript, Tailwind, Shadcn UI)
 - [x] All dependencies installed (Neon, Clerk, AI SDK, Vercel Blob, papaparse)
 - [x] **Step 1:** `lib/db.ts` — two pool connections (pooled + direct), migration SQL run against Neon
-- [x] **Step 2:** Clerk auth — `proxy.ts` middleware, ClerkProvider in layout, sign-in/sign-up pages
+- [x] **Step 2:** Clerk auth — middleware, ClerkProvider in layout, sign-in/sign-up pages
+- [x] **Step 3:** CSV upload + schema mapper (`/import` page + `/api/import`)
+  - AI-powered column normalization via `lib/schema-mapper.ts`
+  - `unnest()` bulk upsert (25k contacts in ~2s)
+  - Smart same-event detection: `evt-XXXX` from `qr_code_url` is primary key; email subset check as fallback
+  - Merge-not-replace for same-event re-imports (newer fields win, old contacts preserved, series count unchanged)
+  - Different events with same name auto-created as new series entries
+  - Content hash blocks exact duplicate file uploads before any processing
+- [x] **Step 4:** Contact table (`/contacts`) — keyset pagination, debounced trigram search, embed status badge
+- [x] `next.config.ts` loads `.env.local` from main repo root in any git worktree (`--git-common-dir`)
 
 ---
 
 ## In Progress
 
-- [ ] Fixing `MIDDLEWARE_INVOCATION_FAILED` error (Next.js 16 proxy.ts rename in progress)
+- Nothing currently blocked
 
 ---
 
 ## Up Next (following build order)
 
-3. CSV upload + schema mapper (`/import` page + `/api/import`) ← next
-4. Contact table with basic search (`/contacts`)
-5. NL search evals (`__tests__/evals.test.ts`)
-6. NL search (`lib/nl-search.ts`)
-7. Segment builder (`/segments`)
-8. Outreach drafter (`/outreach`)
-9. Dashboard
-10. Embedding pipeline
-11. `vercel.json` + cron routes
-12. Dedup job
-13. Hallucination + dedup evals
-14. README + deploy
+5. **NL search evals** (`__tests__/evals.test.ts`) ← next — write contract before implementation
+6. **NL search** (`lib/nl-search.ts` + guardrails + trigram fallback)
+7. **Segment builder** (`/segments` page) — demo moment #2
+8. **Outreach drafter** (`/outreach` page with streaming) — demo moment #3
+9. **Dashboard** (SSR + Suspense streaming stats)
+10. **Embedding pipeline** (`lib/embeddings.ts` + batch job with `unnest()`)
+11. **`vercel.json` + cron routes** (`/api/cron/embed`, `/api/cron/dedup`)
+12. **Dedup job** (`lib/dedup.ts` — incremental + chunked)
+13. **Hallucination + dedup evals** (complete eval suite, `npm test`)
+14. **README + deploy to Vercel**
 
 ---
 

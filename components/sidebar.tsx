@@ -2,7 +2,8 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Users, Upload, Search, Filter, Mail, LayoutDashboard } from 'lucide-react'
+import { useClerk, useUser } from '@clerk/nextjs'
+import { Users, Upload, Search, Filter, Mail, LayoutDashboard, LogOut } from 'lucide-react'
 
 const records = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -14,6 +15,8 @@ const records = [
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { signOut } = useClerk()
+  const { user } = useUser()
 
   return (
     <aside className="w-56 shrink-0 border-r bg-white flex flex-col h-full overflow-y-auto">
@@ -56,6 +59,27 @@ export function Sidebar() {
           )
         })}
       </nav>
+
+      {/* User + sign out */}
+      <div className="px-3 py-3 border-t">
+        <div className="flex items-center gap-2.5 px-2 mb-2">
+          <div className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center shrink-0">
+            <span className="text-[10px] font-semibold text-gray-600">
+              {user?.firstName?.[0] ?? user?.emailAddresses?.[0]?.emailAddress?.[0]?.toUpperCase() ?? '?'}
+            </span>
+          </div>
+          <span className="text-xs text-gray-600 truncate">
+            {user?.firstName ?? user?.emailAddresses?.[0]?.emailAddress ?? 'User'}
+          </span>
+        </div>
+        <button
+          onClick={() => signOut({ redirectUrl: '/sign-in' })}
+          className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm text-gray-600 hover:bg-gray-50 hover:text-black transition-colors w-full"
+        >
+          <LogOut className="w-4 h-4 shrink-0" />
+          Sign out
+        </button>
+      </div>
     </aside>
   )
 }

@@ -565,6 +565,18 @@ export async function POST(req: Request) {
     // Why generic message: err.message may contain internal details like
     // DB connection strings or API key errors — never expose those to the client.
     console.error('Import failed:', err)
+
+    // Why check for storage limit: Neon's free tier caps at 512 MB. When the DB
+    // is full, Postgres returns "could not extend file because project size limit
+    // has been exceeded". Surface a clear message so the user knows the cause.
+    const errMsg = (err as Error).message ?? ''
+    if (errMsg.includes('size limit') || errMsg.includes('could not extend')) {
+      return NextResponse.json(
+        { error: 'Database storage limit reached. Please delete old data or upgrade your Neon plan.' },
+        { status: 507 }
+      )
+    }
+
     return NextResponse.json(
       { error: 'Import failed — please try again' },
       { status: 500 }

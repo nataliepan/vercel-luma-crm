@@ -5,6 +5,7 @@ import { createHash } from 'crypto'
 import { put } from '@vercel/blob'
 import { db } from '@/lib/db'
 import { mapSchema } from '@/lib/schema-mapper'
+import { safeErrorMessage } from '@/lib/safe-error'
 
 // Why maxDuration 120: CSV parsing + AI schema mapping + bulk upsert for large
 // files can take up to 2 minutes. Default 10s would timeout on real imports.
@@ -577,16 +578,8 @@ export async function POST(req: Request) {
       )
     }
 
-    // Why include a sanitized detail: the generic "please try again" makes debugging
-    // impossible. We include the error class and a truncated message — enough to
-    // diagnose (timeout, connection refused, invalid SQL) without leaking secrets.
-    const safeDetail = errMsg
-      .replace(/postgresql:\/\/[^\s]+/gi, '[REDACTED_URL]')  // strip connection strings
-      .replace(/sk-[a-zA-Z0-9_-]+/g, '[REDACTED_KEY]')       // strip API keys
-      .slice(0, 200)
-
     return NextResponse.json(
-      { error: `Import failed: ${safeDetail || 'unknown error'}` },
+      { error: safeErrorMessage(err, 'Import failed') },
       { status: 500 }
     )
   }

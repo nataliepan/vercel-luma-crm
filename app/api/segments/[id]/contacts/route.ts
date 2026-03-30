@@ -3,6 +3,7 @@ import { auth } from '@clerk/nextjs/server'
 import { db } from '@/lib/db'
 import { validateSQL, generateWhereClause } from '@/lib/nl-search'
 import { rateLimit } from '@/lib/rate-limit'
+import { safeErrorMessage } from '@/lib/safe-error'
 
 // GET /api/segments/[id]/contacts
 // Returns all contacts matching the segment's filter_sql.
@@ -211,7 +212,7 @@ export async function POST(
   } catch (err) {
     console.error('POST /api/segments/[id]/contacts failed:', err)
     return NextResponse.json(
-      { error: 'Failed to refine contacts' },
+      { error: safeErrorMessage(err, 'Failed to refine contacts') },
       { status: 500 }
     )
   }

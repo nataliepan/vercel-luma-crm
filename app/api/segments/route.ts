@@ -3,6 +3,7 @@ import { auth } from '@clerk/nextjs/server'
 import { generateText } from 'ai'
 import { anthropic } from '@/lib/ai'
 import { db } from '@/lib/db'
+import { safeErrorMessage } from '@/lib/safe-error'
 import { validateSQL } from '@/lib/nl-search'
 import { SEGMENT_BUILDER_PROMPT } from '@/lib/prompts'
 import { rateLimit } from '@/lib/rate-limit'
@@ -81,7 +82,7 @@ export async function GET() {
     return NextResponse.json({ segments: result.rows })
   } catch (err) {
     console.error('GET /api/segments error:', err)
-    return NextResponse.json({ error: 'Failed to fetch segments' }, { status: 500 })
+    return NextResponse.json({ error: safeErrorMessage(err, 'Failed to fetch segments') }, { status: 500 })
   }
 }
 
@@ -265,7 +266,7 @@ export async function POST(req: Request) {
     // then throws as a SyntaxError — obscuring the real problem from the user.
     console.error('POST /api/segments failed:', err)
     return NextResponse.json(
-      { error: 'Failed to create segment' },
+      { error: safeErrorMessage(err, 'Failed to create segment') },
       { status: 500 }
     )
   }
@@ -316,7 +317,7 @@ export async function PATCH(req: Request) {
   } catch (err) {
     console.error('PATCH /api/segments failed:', err)
     return NextResponse.json(
-      { error: 'Failed to update segment' },
+      { error: safeErrorMessage(err, 'Failed to update segment') },
       { status: 500 }
     )
   }
@@ -343,7 +344,7 @@ export async function DELETE(req: Request) {
   } catch (err) {
     console.error('DELETE /api/segments failed:', err)
     return NextResponse.json(
-      { error: 'Failed to delete segment' },
+      { error: safeErrorMessage(err, 'Failed to delete segment') },
       { status: 500 }
     )
   }

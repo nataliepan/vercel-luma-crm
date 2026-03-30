@@ -562,8 +562,8 @@ export async function POST(req: Request) {
     // cause Next.js to return an HTML 500 page. The client calls res.json() which
     // then throws a SyntaxError caught as a misleading "Network error".
     // Returning JSON here gives the client a real error message to display.
-    // Why generic message: err.message may contain internal details like
-    // DB connection strings or API key errors — never expose those to the client.
+    // Error messages are sanitized below — connection strings and API keys are
+    // redacted before returning to the client.
     console.error('Import failed:', err)
 
     // Why check for storage limit: Neon's free tier caps at 512 MB. When the DB

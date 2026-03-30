@@ -1,17 +1,12 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
-import Anthropic from '@anthropic-ai/sdk'
+import { generateText } from 'ai'
+import { anthropic } from '@/lib/ai'
 import { db } from '@/lib/db'
 import { validateSQL } from '@/lib/nl-search'
 import { SEGMENT_BUILDER_PROMPT } from '@/lib/prompts'
 import { rateLimit } from '@/lib/rate-limit'
 import { logAICall } from '@/lib/ai-log'
-
-// Why lazy init: module-level instantiation reads process.env at import time.
-// Lazy init ensures the key is available when the function is actually invoked.
-function getClient() {
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-}
 
 interface SegmentAIResponse {
   label: string
@@ -34,21 +29,15 @@ interface SegmentAIResponse {
 async function generateSegment(description: string, userId: string): Promise<SegmentAIResponse | null> {
   const startMs = Date.now()
   try {
-    const message = await getClient().messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 512,
+    const result = await generateText({
+      model: anthropic('claude-sonnet-4-6'),
       system: SEGMENT_BUILDER_PROMPT,
       messages: [{ role: 'user', content: description }],
+      maxOutputTokens: 512,
     })
 
-    const text = message.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('')
-      .trim()
-
     // Strip markdown fences — model sometimes wraps JSON in ```json ... ```
-    const cleaned = text.replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/, '').trim()
+    const cleaned = result.text.trim().replace(/^```(?:json)?\n?/i, '').replace(/\n?```$/, '').trim()
     const parsed = JSON.parse(cleaned) as SegmentAIResponse
 
     if (!parsed.label || !parsed.filter_sql) {
@@ -60,8 +49,8 @@ async function generateSegment(description: string, userId: string): Promise<Seg
     logAICall({
       userId, feature: 'segment', input: description, output: cleaned,
       model: 'claude-sonnet-4-6',
-      tokensIn: message.usage?.input_tokens,
-      tokensOut: message.usage?.output_tokens,
+      tokensIn: result.usage?.inputTokens,
+      tokensOut: result.usage?.outputTokens,
       durationMs: Date.now() - startMs,
     })
 

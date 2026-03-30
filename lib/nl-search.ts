@@ -1,14 +1,8 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { generateText } from 'ai'
+import { anthropic } from '@/lib/ai'
 import { db } from './db'
 import { NL_SEARCH_PROMPT } from './prompts'
 import { logAICall } from './ai-log'
-
-// Why lazy init: instantiating at module load reads process.env at import time.
-// In tests, setupFiles sets env vars before tests run but after module evaluation.
-// A getter ensures the key is read when the function is actually called.
-function getClient() {
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-}
 
 // Patterns that must never appear in AI-generated WHERE clauses.
 // Why this list: the AI generates a SQL fragment that gets injected into a
@@ -62,21 +56,15 @@ export function validateSQL(clause: string): string {
  * Restricting the AI to a WHERE fragment limits its blast radius.
  */
 export async function generateWhereClause(query: string): Promise<string> {
-  const message = await getClient().messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 512,
+  const result = await generateText({
+    model: anthropic('claude-sonnet-4-6'),
     system: NL_SEARCH_PROMPT,
     messages: [{ role: 'user', content: query }],
+    maxOutputTokens: 512,
   })
 
-  const text = message.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { type: 'text'; text: string }).text)
-    .join('')
-    .trim()
-
   // Strip markdown code fences if the model wrapped the SQL in them
-  const cleaned = text.replace(/^```(?:sql)?\n?/i, '').replace(/\n?```$/, '').trim()
+  const cleaned = result.text.trim().replace(/^```(?:sql)?\n?/i, '').replace(/\n?```$/, '').trim()
 
   return cleaned
 }

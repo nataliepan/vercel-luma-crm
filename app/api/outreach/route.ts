@@ -1,4 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { streamText } from 'ai'
+import { anthropic } from '@/lib/ai'
 import { auth } from '@clerk/nextjs/server'
 import { db } from '@/lib/db'
 import { validateSQL } from '@/lib/nl-search'
@@ -6,16 +7,9 @@ import { OUTREACH_SYSTEM_PROMPT } from '@/lib/prompts'
 import { rateLimit } from '@/lib/rate-limit'
 import { logAICall } from '@/lib/ai-log'
 
-// Why @anthropic-ai/sdk not @ai-sdk/anthropic: the @ai-sdk/anthropic v3 package
-// hits https://api.anthropic.com/messages (missing /v1/ prefix) and returns 404.
-// @anthropic-ai/sdk is already used throughout the codebase and works correctly.
-function getClient() {
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-}
-
-// Why streamText via raw ReadableStream not AI SDK streamText: same reason above.
-// We stream the Anthropic response directly to the client as plain text chunks.
-// The page reads this with a fetch + ReadableStream reader — no SDK needed client-side.
+// Why streamText not generateText: outreach drafts are 150-300 words.
+// With generateText the user stares at a spinner for 3-5 seconds.
+// Streaming shows the first words in ~300ms — dramatically better UX.
 export async function POST(req: Request) {
   const { userId } = await auth()
   if (!userId) return new Response('Unauthorized', { status: 401 })
@@ -90,62 +84,40 @@ export async function POST(req: Request) {
     JSON.stringify(contactSample, null, 2),
   ].join('\n')
 
-  // Stream the Anthropic response as plain text chunks.
-  // The client reads this with a fetch + ReadableStream reader.
-  const encoder = new TextEncoder()
-  const stream = new ReadableStream({
-    async start(controller) {
-      const startMs = Date.now()
-      let fullOutput = ''
-      try {
-        const anthropicStream = await getClient().messages.stream({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 1000,
-          system: OUTREACH_SYSTEM_PROMPT,
-          messages: [{ role: 'user', content: userMessage }],
-        })
+  const startMs = Date.now()
 
-        for await (const chunk of anthropicStream) {
-          if (
-            chunk.type === 'content_block_delta' &&
-            chunk.delta.type === 'text_delta'
-          ) {
-            fullOutput += chunk.delta.text
-            controller.enqueue(encoder.encode(chunk.delta.text))
-          }
-        }
-
-        logAICall({
-          userId,
-          feature: 'outreach',
-          input: userMessage,
-          output: fullOutput,
-          model: 'claude-sonnet-4-6',
-          durationMs: Date.now() - startMs,
-        })
-      } catch (err) {
-        console.error('Outreach stream error:', err)
-        logAICall({
-          userId,
-          feature: 'outreach',
-          input: userMessage,
-          model: 'claude-sonnet-4-6',
-          durationMs: Date.now() - startMs,
-          error: (err as Error).message,
-        })
-        controller.enqueue(encoder.encode('\n[Error generating draft. Please try again.]'))
-      } finally {
-        controller.close()
-      }
+  // Why streamText: AI SDK handles streaming, error recovery, and response
+  // formatting. toTextStreamResponse() returns a standard Response that
+  // the client reads as a text stream — same UX as before but less code.
+  const result = streamText({
+    model: anthropic('claude-sonnet-4-6'),
+    system: OUTREACH_SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userMessage }],
+    maxOutputTokens: 1000,
+    onFinish: async ({ text, usage }) => {
+      logAICall({
+        userId,
+        feature: 'outreach',
+        input: userMessage,
+        output: text,
+        model: 'claude-sonnet-4-6',
+        tokensIn: usage?.inputTokens,
+        tokensOut: usage?.outputTokens,
+        durationMs: Date.now() - startMs,
+      })
+    },
+    onError: async ({ error }) => {
+      console.error('Outreach stream error:', error)
+      logAICall({
+        userId,
+        feature: 'outreach',
+        input: userMessage,
+        model: 'claude-sonnet-4-6',
+        durationMs: Date.now() - startMs,
+        error: (error as Error).message,
+      })
     },
   })
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/plain; charset=utf-8',
-      // Why no-cache: ensure the browser doesn't buffer the stream
-      'Cache-Control': 'no-cache',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  })
+  return result.toTextStreamResponse()
 }

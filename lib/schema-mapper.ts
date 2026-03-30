@@ -1,5 +1,5 @@
 import { generateText } from 'ai'
-import { anthropic } from '@ai-sdk/anthropic'
+import { anthropic } from '@/lib/ai'
 import { SCHEMA_MAPPER_PROMPT } from '@/lib/prompts'
 
 // Why generateText not streamText: schema mapping returns a single JSON object.

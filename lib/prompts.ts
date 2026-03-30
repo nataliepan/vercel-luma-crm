@@ -199,13 +199,8 @@ If no issues found: { "flagged": false, "issues": [] }
 // Runtime helper — used by evals and the outreach pipeline
 // ---------------------------------------------------------------------------
 
-import Anthropic from '@anthropic-ai/sdk'
-
-// Why lazy init: same reason as nl-search.ts — module-level instantiation reads
-// process.env at import time, before setupFiles can inject the key in tests.
-function _getClient() {
-  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-}
+import { generateText } from 'ai'
+import { anthropic } from '@/lib/ai'
 
 export interface ContactRecord {
   name: string
@@ -230,9 +225,8 @@ export async function checkForHallucinations(
   draft: string,
   contact: ContactRecord
 ): Promise<HallucinationResult> {
-  const message = await _getClient().messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 256,
+  const result = await generateText({
+    model: anthropic('claude-sonnet-4-6'),
     system: HALLUCINATION_CHECK_PROMPT,
     messages: [
       {
@@ -240,13 +234,10 @@ export async function checkForHallucinations(
         content: `Contact record: ${JSON.stringify(contact)}\n\nDraft: ${draft}`,
       },
     ],
+    maxOutputTokens: 256,
   })
 
-  const text = message.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { type: 'text'; text: string }).text)
-    .join('')
-    .trim()
+  const text = result.text.trim()
 
   try {
     // Strip markdown fences if present

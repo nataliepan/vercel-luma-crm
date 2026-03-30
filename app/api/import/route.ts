@@ -577,8 +577,16 @@ export async function POST(req: Request) {
       )
     }
 
+    // Why include a sanitized detail: the generic "please try again" makes debugging
+    // impossible. We include the error class and a truncated message — enough to
+    // diagnose (timeout, connection refused, invalid SQL) without leaking secrets.
+    const safeDetail = errMsg
+      .replace(/postgresql:\/\/[^\s]+/gi, '[REDACTED_URL]')  // strip connection strings
+      .replace(/sk-[a-zA-Z0-9_-]+/g, '[REDACTED_KEY]')       // strip API keys
+      .slice(0, 200)
+
     return NextResponse.json(
-      { error: 'Import failed — please try again' },
+      { error: `Import failed: ${safeDetail || 'unknown error'}` },
       { status: 500 }
     )
   }

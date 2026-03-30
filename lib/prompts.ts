@@ -35,12 +35,16 @@ The contact_events table (alias: ce, join via ce.contact_id = contacts.id) has:
 - ticket_name TEXT (e.g. 'Women''s Grant', 'Bootstrapped Founder')
 - ticket_type_id TEXT
 - custom_responses JSONB — registration question answers, keyed by normalized question label.
-  Common keys from Luma exports: city, linkedin, industry, funding_stage, product_stage,
-  team_size, funding_raised, arr, how_did_you_hear, what_are_you_working_on, company, role.
-  Keys are lowercase with underscores (e.g. "What's your city?" → "whats_your_city").
-  Access with: ce.custom_responses->>'city'  (returns text, NULL if absent)
-- raw_row JSONB — verbatim original CSV row. Use as fallback if custom_responses key not found:
-  ce.raw_row->>'What is your city?'  (use the exact original column header as key)
+  ACTUAL keys in the database (use these exact keys):
+  City: which_city_you_are_coming_from, what_city_are_you_based_out_of, what_city_are_you_joining_us_from
+  Industry: industries_you_work_in, what_industries_do_you_fall_under, industry
+  Funding: funding_stage, company_funding_stage, funding_raised_to_date_usd, are_you_fundraising
+  Role: what_is_your_primary_role, if_entrepreneur_what_stage_are_you_in
+  Stage: company_product_stage, optional_what_is_your_startup_stage, stage_for_startups_stages_you_invest_in_for_investors
+  Interest: would_you_be_interested_in, which_skills_do_you_want_to_learn, what_do_you_want_to_learn
+  Other: how_did_you_hear_about_us, describe_your_startup_in_one_sentence, phone_number
+  For city queries, search ALL city keys with OR. Access with: ce.custom_responses->>'key_name'
+- raw_row JSONB — verbatim original CSV row. Fallback if custom_responses key not found.
 
 Rules:
 - Return ONLY the WHERE clause body, no SELECT/FROM/WHERE keywords
@@ -110,9 +114,14 @@ The contact_events table (alias: ce, join via ce.contact_id = contacts.id) has:
 - coupon_code TEXT (NULL if none)
 - ticket_name TEXT
 - custom_responses JSONB — registration question answers keyed by normalized label.
-  Common keys: city, linkedin, industry, funding_stage, product_stage, team_size,
-  funding_raised, arr, how_did_you_hear, what_are_you_working_on.
-  Access with: ce.custom_responses->>'city'
+  ACTUAL keys in the database (use these exact keys):
+  City: which_city_you_are_coming_from, what_city_are_you_based_out_of, what_city_are_you_joining_us_from
+  Industry: industries_you_work_in, what_industries_do_you_fall_under, industry
+  Funding: funding_stage, company_funding_stage, are_you_fundraising
+  Stage: company_product_stage, stage_for_startups_stages_you_invest_in_for_investors
+  Interest: would_you_be_interested_in, which_skills_do_you_want_to_learn
+  For city queries, search ALL city keys with OR.
+  Access with: ce.custom_responses->>'key_name'
 
 filter_sql rules:
 - Return ONLY the WHERE clause body, no SELECT/FROM/WHERE keywords

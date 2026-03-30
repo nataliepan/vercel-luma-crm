@@ -1,9 +1,15 @@
 import OpenAI from 'openai'
 import { dbDirect } from './db'
 
-// Why OpenAI not Anthropic: text-embedding-3-small is the embedding model.
-// Anthropic doesn't offer an embedding API — OpenAI is the standard choice.
-const openai = new OpenAI()
+// Why Vercel AI Gateway: routes embedding requests through Vercel's gateway,
+// which handles billing, rate limiting, and model routing. Credits are managed
+// via Vercel billing instead of a separate OpenAI account.
+// Why OpenAI's model: Anthropic has no embedding API. text-embedding-3-small
+// is the industry standard — cheap ($0.02/M tokens), fast, 1536 dimensions.
+const openai = new OpenAI({
+  apiKey: process.env.AI_GATEWAY_API_KEY,
+  baseURL: 'https://ai-gateway.vercel.sh/v1',
+})
 
 // Why 2048: OpenAI's embedding API accepts up to 2048 inputs per call.
 // Batching ~24k contacts = ~12 API calls instead of 24k individual calls.
@@ -19,7 +25,7 @@ export async function embedContactsBatch(contactIds: string[], userId: string) {
   const contacts = await dbDirect.query(
     `SELECT id, name, company, role, notes
      FROM contacts
-     WHERE id = ANY($1) AND user_id = $2 AND embedding_status = 'pending'`,
+     WHERE id = ANY($1) AND user_id = $2 AND embedding_status IN ('pending', 'failed')`,
     [contactIds, userId]
   )
   // Why omit email from embedding text: email isn't semantically meaningful
@@ -31,11 +37,13 @@ export async function embedContactsBatch(contactIds: string[], userId: string) {
   let totalProcessed = 0
   let totalFailed = 0
 
-  const texts = contacts.rows.map((c: { name: string; role: string; company: string; notes: string }) =>
-    [c.name, c.role, c.company, c.notes].filter(Boolean).join(' ')
-    // Why this format: preserves semantic meaning. "John Smith founder Acme Corp"
-    // clusters near similar profiles in embedding space.
-  )
+  const texts = contacts.rows.map((c: { name: string; role: string; company: string; notes: string }) => {
+    const text = [c.name, c.role, c.company, c.notes].filter(Boolean).join(' ')
+    // Why fallback to 'unknown': empty strings cause Azure OpenAI (via AI Gateway)
+    // to reject the entire batch with '$.input is invalid'. A placeholder ensures
+    // every input is non-empty while still producing a low-information embedding.
+    return text || 'unknown'
+  })
 
   for (let i = 0; i < texts.length; i += CHUNK_SIZE) {
     const chunk = texts.slice(i, i + CHUNK_SIZE)
@@ -43,7 +51,7 @@ export async function embedContactsBatch(contactIds: string[], userId: string) {
 
     try {
       const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
+        model: 'openai/text-embedding-3-small',
         input: chunk,
       })
 
@@ -81,11 +89,11 @@ export async function embedContactsBatch(contactIds: string[], userId: string) {
  * Queries pending IDs then delegates to embedContactsBatch.
  */
 export async function embedPendingContacts(userId: string) {
-  // Why partial index idx_contacts_pending_embed: only indexes the small 'pending'
-  // subset, not all 200k rows. At steady state, pending rows are <1% of total.
+  // Why also retry 'failed': failed embeddings would otherwise be stuck until
+  // manually reset. The button and cron should retry them automatically.
   const pending = await dbDirect.query(
     `SELECT id FROM contacts
-     WHERE user_id = $1 AND embedding_status = 'pending'
+     WHERE user_id = $1 AND embedding_status IN ('pending', 'failed')
      ORDER BY created_at`,
     [userId]
   )
